@@ -1,0 +1,3361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2c3e50">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="EPUB Reader">
+    <title>EPUB Reader with AI Translation</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" href="./icons/icon-192.png">
+    <script src="./lib/jszip.min.js"></script>
+    <script src="./lib/epub.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            margin: 0;
+        }
+        #reader-container {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            width: 80%;
+            max-width: 1000px;
+            gap: 10px;
+        }
+        #reader {
+            width: 100%;
+            height: 800px;
+            border: 2px solid #007bff;
+            overflow: hidden;
+            background: #fff;
+            flex: 1;
+            position: relative;
+        }
+        #reader iframe {
+            width: 100% !important;
+            height: 100% !important;
+            border: none;
+        }
+
+        /* Translation-specific styles */
+        .translation-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.95);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+            flex-direction: column;
+        }
+
+        .translation-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #007bff;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .translation-status {
+            font-size: 1.1em;
+            color: #333;
+            text-align: center;
+            max-width: 80%;
+        }
+
+        /* Translation settings modal */
+        #translationSettingsModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            justify-content: center;
+            align-items: center;
+            z-index: 1001;
+        }
+
+        #translationSettingsContent {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90%;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .settings-group {
+            margin-bottom: 20px;
+        }
+
+        .settings-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .settings-group input[type="text"],
+        .settings-group input[type="password"],
+        .settings-group select,
+        .settings-group textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        .settings-group textarea {
+            min-height: 60px;
+            resize: vertical;
+        }
+
+        .settings-group .help-text {
+            font-size: 0.85em;
+            color: #666;
+            margin-top: 3px;
+        }
+
+        .api-status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+
+        .api-status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .api-status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .api-status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .debug-info {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .translation-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .translation-controls button {
+            flex: 1;
+        }
+
+        /* Simplified translated content styling */
+        .translated-element {
+            /* No special styling needed - just a marker class */
+        }
+
+        .showing-original .translated-element {
+            opacity: 0.8;
+            font-style: italic;
+        }
+
+        /* Chunk status indicator */
+        .chunk-status {
+            font-size: 0.9em;
+            color: #555;
+            background: #f1f3f5;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 6px 12px;
+            margin: 8px 0;
+            max-width: 1000px;
+            width: 80%;
+            text-align: center;
+            min-height: 1.4em;
+        }
+
+        /* Diagnostics panel */
+        .diag-panel {
+            position: fixed;
+            bottom: 0;
+            right: 0;
+            width: 480px;
+            max-width: 90vw;
+            height: 280px;
+            background: rgba(20, 20, 20, 0.95);
+            color: #e8e8e8;
+            font-family: "SF Mono", Monaco, Consolas, monospace;
+            font-size: 11px;
+            z-index: 2000;
+            border-top-left-radius: 6px;
+            border: 1px solid #444;
+            display: flex;
+            flex-direction: column;
+        }
+        .diag-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 8px;
+            background: #333;
+            border-bottom: 1px solid #555;
+            font-weight: bold;
+        }
+        .diag-header button {
+            background: #555;
+            color: #fff;
+            border: none;
+            border-radius: 3px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+        .diag-body {
+            flex: 1;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            padding: 6px 8px;
+            line-height: 1.4;
+        }
+        /* Drag and drop styles */
+        .drag-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 123, 255, 0.1);
+            border: 3px dashed #007bff;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            pointer-events: none;
+        }
+        .drag-overlay.active {
+            display: flex;
+        }
+        .drag-message {
+            background: #007bff;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            font-size: 1.2em;
+            text-align: center;
+        }
+        /* Chinese font mapping styles - applied to translated content */
+        .chinese-translated {
+            font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei", sans-serif !important;
+        }
+        .chinese-translated [style*="serif"],
+        .chinese-translated h1,
+        .chinese-translated h2,
+        .chinese-translated h3,
+        .chinese-translated h4,
+        .chinese-translated h5,
+        .chinese-translated h6 {
+            font-family: "Songti SC", "SimSun", "Noto Serif CJK SC", "Source Han Serif SC", "STSong", serif !important;
+        }
+        .chinese-translated [style*="sans-serif"],
+        .chinese-translated p,
+        .chinese-translated div,
+        .chinese-translated span {
+            font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", "Arial", sans-serif !important;
+        }
+        .chinese-translated [style*="monospace"],
+        .chinese-translated code,
+        .chinese-translated pre {
+            font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Code", "Source Code Pro", "Noto Sans Mono CJK SC", monospace !important;
+        }
+        /* Force desktop-style rendering on mobile for Chinese */
+        @media (max-width: 1000px) {
+            .chinese-translated {
+                -webkit-text-size-adjust: 100% !important;
+                text-size-adjust: 100% !important;
+                font-size-adjust: none !important;
+            }
+            .chinese-translated * {
+                -webkit-text-size-adjust: 100% !important;
+                text-size-adjust: 100% !important;
+            }
+        }
+        #controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+            margin: 10px 0;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+        }
+        #error {
+            color: red;
+            margin-top: 10px;
+            max-width: 1000px;
+        }
+        #mobile-nav {
+            display: none;
+            width: 100%;
+            justify-content: space-between;
+            margin-top: 5px;
+        }
+        #mobilePrevBtn, #mobileNextBtn {
+            width: 40px;
+            height: 30px;
+            padding: 0;
+            font-size: 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        #mobilePrevBtn:disabled, #mobileNextBtn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        /* Modal styles */
+        #tocModal, #libraryModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        #tocContent, #libraryContent {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            max-width: 80%;
+            max-height: 80%;
+            overflow-y: auto;
+            position: relative;
+        }
+        #tocContent h2, #libraryContent h2 {
+            margin-top: 0;
+            font-size: 1.5em;
+        }
+        #tocList, #libraryList {
+            list-style: none;
+            padding: 0;
+        }
+        #tocList li, #libraryList li {
+            margin: 5px 0;
+        }
+        #tocList a {
+            text-decoration: none;
+            color: #007bff;
+            cursor: pointer;
+        }
+        #tocList a:hover {
+            text-decoration: underline;
+        }
+        #closeModal, #closeLibraryModal {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        /* Library-specific styles */
+        .library-item {
+            display: flex;
+            flex-direction: column;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin: 10px 0;
+            background-color: #f9f9f9;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+            position: relative;
+        }
+        .library-item:hover {
+            background-color: #e9ecef;
+            border-color: #007bff;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .library-item.long-pressing {
+            background-color: #ffe6e6;
+            border-color: #dc3545;
+            animation: shake 0.5s ease-in-out;
+        }
+        .library-item.drag-over {
+            background-color: #e6f3ff;
+            border-color: #007bff;
+            border-width: 2px;
+            box-shadow: 0 0 15px rgba(0, 123, 255, 0.3);
+        }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+        .library-item-title {
+            font-weight: bold;
+            font-size: 1.1em;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .library-item-info {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 3px;
+        }
+        .library-item-progress {
+            font-size: 0.85em;
+            color: #007bff;
+            font-style: italic;
+        }
+        .library-item-actions {
+            font-size: 0.8em;
+            margin-top: 8px;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border-left: 3px solid #007bff;
+        }
+        .library-item-actions.drag-only {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+            color: #856404;
+        }
+        .library-item-actions.path-info {
+            background: #d1ecf1;
+            border-left-color: #17a2b8;
+            color: #0c5460;
+        }
+        .delete-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #dc3545;
+            color: white;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .library-item.long-pressing .delete-indicator {
+            display: flex;
+        }
+        .empty-library {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px 20px;
+        }
+        .browser-support-info {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 15px 0;
+            font-size: 0.9em;
+            color: #0066cc;
+            line-height: 1.4;
+        }
+        .browser-support-info strong {
+            color: #004080;
+        }
+        .copy-path-btn {
+            background: #6c757d;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 0.75em;
+            cursor: pointer;
+            margin-left: 8px;
+        }
+        .copy-path-btn:hover {
+            background: #5a6268;
+        }
+        /* Mobile adjustments - Updated for foldable devices */
+        @media (max-width: 1000px),
+               (max-height: 600px),
+               (pointer: coarse) {
+            body {
+                padding: 10px;
+                padding-bottom: 80px;
+            }
+            h1 {
+                font-size: 1.5em;
+                margin: 10px 0;
+            }
+            #reader-container {
+                flex-direction: column;
+                width: calc(100vw - 20px);
+                gap: 0;
+                margin-bottom: 100px;
+            }
+            #reader {
+                height: calc(100vh + 50px);
+                width: 100%;
+                min-height: 700px;
+            }
+            #prevBtn, #nextBtn {
+                display: none;
+            }
+            #controls {
+                width: calc(100vw - 20px);
+                margin: 5px 0;
+            }
+            button {
+                padding: 8px 15px;
+                font-size: 14px;
+            }
+            #mobile-nav {
+                display: flex;
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                width: 100%;
+                margin: 0;
+                padding: 15px 20px;
+                box-sizing: border-box;
+                background: white;
+                border-top: 1px solid #ccc;
+                box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+                z-index: 100;
+            }
+            #mobilePrevBtn, #mobileNextBtn {
+                width: 60px;
+                height: 40px;
+                font-size: 14px;
+            }
+            input[type="file"] {
+                margin: 5px 0;
+            }
+            #tocContent, #libraryContent {
+                max-width: 95%;
+                max-height: 85%;
+                padding: 15px;
+            }
+            #tocContent h2, #libraryContent h2 {
+                font-size: 1.2em;
+            }
+            #closeModal, #closeLibraryModal {
+                padding: 3px 8px;
+                font-size: 12px;
+            }
+            .library-item {
+                padding: 12px;
+                margin: 8px 0;
+            }
+            .library-item-title {
+                font-size: 1em;
+            }
+            .library-item-info {
+                font-size: 0.85em;
+            }
+            .library-item-actions {
+                font-size: 0.75em;
+                margin-top: 6px;
+                padding: 6px;
+            }
+        }
+
+        /* iPhone Pro Max and similar large phones */
+        @media (min-width: 400px) and (max-width: 500px) and (min-height: 800px) and (orientation: portrait) {
+            #reader-container {
+                margin-bottom: 120px !important;
+            }
+            #reader {
+                height: calc(100vh + 100px) !important;
+                min-height: 900px !important;
+            }
+        }
+
+        /* Specific handling for Galaxy Fold and similar devices */
+        @media (min-width: 1700px) and (max-width: 2000px) and (min-height: 2000px) and (orientation: portrait) {
+            body {
+                padding: 15px;
+                padding-bottom: 100px;
+            }
+            h1 {
+                font-size: 1.8em;
+                margin: 15px 0;
+            }
+            #reader-container {
+                flex-direction: column;
+                width: calc(100vw - 30px);
+                gap: 0;
+                margin-bottom: 120px;
+            }
+            #reader {
+                height: calc(100vh + 80px);
+                width: 100%;
+                min-height: 1100px;
+            }
+            #prevBtn, #nextBtn {
+                display: none;
+            }
+            #controls {
+                width: calc(100vw - 30px);
+                margin: 10px 0;
+            }
+            button {
+                padding: 15px 25px;
+                font-size: 18px;
+            }
+            #mobile-nav {
+                display: flex;
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                width: 100%;
+                margin: 0;
+                padding: 20px 30px;
+                box-sizing: border-box;
+                background: white;
+                border-top: 1px solid #ccc;
+                box-shadow: 0 -2px 15px rgba(0,0,0,0.1);
+                z-index: 100;
+            }
+            #mobilePrevBtn, #mobileNextBtn {
+                width: 100px;
+                height: 60px;
+                font-size: 18px;
+            }
+            input[type="file"] {
+                margin: 10px 0;
+            }
+            #tocContent, #libraryContent {
+                max-width: 85%;
+                max-height: 75%;
+                padding: 20px;
+            }
+        }
+
+        /* Extra small mobile devices */
+        @media (max-height: 600px) {
+            body {
+                padding-bottom: 70px !important;
+            }
+            #reader-container {
+                margin-bottom: 60px !important;
+            }
+            #reader {
+                height: calc(100vh + 20px) !important;
+                min-height: 500px !important;
+            }
+            #mobile-nav {
+                padding: 10px 20px !important;
+            }
+            #mobilePrevBtn, #mobileNextBtn {
+                height: 35px !important;
+                font-size: 12px !important;
+            }
+        }
+
+        /* Very tall phones like iPhone Pro Max */
+        @media (min-height: 900px) and (max-width: 500px) {
+            #reader {
+                height: calc(100vh + 150px) !important;
+                min-height: 1000px !important;
+            }
+            #reader-container {
+                margin-bottom: 150px !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="drag-overlay" id="dragOverlay">
+        <div class="drag-message">
+            📚 Drop EPUB file here to open
+        </div>
+    </div>
+
+    <h1>EPUB Reader with AI Translation</h1>
+    <input type="file" id="epubInput" accept=".epub">
+    <div id="controls">
+        <button id="libraryBtn" onclick="showLibrary()">Library</button>
+        <button id="tocBtn" onclick="showTableOfContents()" disabled>Table of Contents</button>
+        <button id="translateSettingsBtn" onclick="showTranslationSettings()">Translation Settings</button>
+        <button id="translateBtn" onclick="translateCurrentChunk()">Translate This Chunk</button>
+        <button id="toggleTranslationBtn" onclick="toggleTranslatedContent()" style="display: none;">Show Original</button>
+        <button id="clearPositionBtn" onclick="clearSavedPosition()">Clear Saved Position</button>
+        <button id="toggleChineseFontsBtn" onclick="toggleChineseFonts()">Toggle Chinese Fonts</button>
+        <button id="diagToggleBtn" onclick="toggleDiagPanel()">Diag</button>
+        <button id="installBtn" onclick="promptInstall()" style="display: none;">⬇ Install App</button>
+    </div>
+    <div id="chunkStatus" class="chunk-status"></div>
+    <div id="reader-container">
+        <button id="prevBtn" disabled onclick="prevPage()">Previous Page</button>
+        <div id="reader">
+            <div class="translation-overlay" id="translationOverlay">
+                <div class="translation-spinner"></div>
+                <div class="translation-status">Translating page content...</div>
+            </div>
+        </div>
+        <button id="nextBtn" disabled onclick="nextPage()">Next Page</button>
+    </div>
+    <div id="mobile-nav">
+        <button id="mobilePrevBtn" disabled onclick="prevPage()">Prev</button>
+        <button id="mobileNextBtn" disabled onclick="nextPage()">Next</button>
+    </div>
+
+    <!-- Translation Settings Modal -->
+    <div id="translationSettingsModal">
+        <div id="translationSettingsContent">
+            <button id="closeTranslationSettings" onclick="closeTranslationSettings()" style="position: absolute; top: 10px; right: 10px; background-color: #dc3545; color: white; border: none; border-radius: 3px; padding: 5px 10px; cursor: pointer;">Close</button>
+            <h2>AI Translation Settings</h2>
+
+            <div class="settings-group">
+                <label for="providerSelect">Translation Provider</label>
+                <select id="providerSelect" onchange="updateProvider()">
+                    <option value="browser">Browser translate (default — use Chrome's built-in translate)</option>
+                    <option value="local-proxy">Local proxy (AI translation via Flask backend + Anthropic key)</option>
+                </select>
+                <div class="help-text">"Browser" needs no setup: right-click the page and choose Translate. "Local proxy" enables AI chunk translation but requires the Flask backend running on this machine.</div>
+            </div>
+
+            <div class="settings-group">
+                <label for="apiKey">Anthropic API Key</label>
+                <input type="password" id="apiKey" placeholder="Enter your API key">
+                <div class="help-text">Your API key is stored locally and sent only to the backend server.</div>
+            </div>
+
+            <div class="settings-group">
+                <label for="modelSelect">Claude Model</label>
+                <select id="modelSelect" onchange="updateModel()">
+                    <option value="sonnet">Claude 3.5 Sonnet (Latest & Best)</option>
+                    <option value="haiku">Claude 3 Haiku (Faster & Cheaper)</option>
+                    <option value="opus">Claude 3 Opus (Most Capable)</option>
+                </select>
+                <div class="help-text">Sonnet 3.5 offers the best balance of quality and speed for translation.</div>
+            </div>
+
+            <div class="settings-group">
+                <label for="targetLanguage">Target Language</label>
+                <select id="targetLanguage">
+                    <option value="zh-CN">Chinese (Simplified)</option>
+                    <option value="zh-TW">Chinese (Traditional)</option>
+                    <option value="ja">Japanese</option>
+                    <option value="ko">Korean</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="de">German</option>
+                    <option value="ru">Russian</option>
+                    <option value="ar">Arabic</option>
+                    <option value="hi">Hindi</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="it">Italian</option>
+                </select>
+            </div>
+
+            <div class="settings-group">
+                <label for="translationPrompt">Translation Instructions (Optional)</label>
+                <textarea id="translationPrompt" placeholder="E.g., Translate maintaining the literary style, preserve technical terms...">Translate the following text accurately while preserving the original tone, style, and formatting. Maintain any technical terms, proper nouns, and special formatting.</textarea>
+                <div class="help-text">Customize how the AI should approach the translation.</div>
+            </div>
+
+            <div class="settings-group">
+                <label>
+                    <input type="checkbox" id="preserveFormatting" checked> Preserve HTML formatting
+                </label>
+            </div>
+
+            <div class="settings-group">
+                <label>
+                    <input type="checkbox" id="cacheTranslations" checked> Cache translations locally
+                </label>
+                <div class="help-text">Save translations to avoid re-translating the same content.</div>
+            </div>
+
+            <div id="apiStatus" class="api-status" style="display: none;"></div>
+            <div id="debugInfo" class="debug-info" style="display: none;"></div>
+
+            <div class="translation-controls">
+                <button onclick="testAPIConnection()">Test Connection</button>
+                <button onclick="saveTranslationSettings()">Save Settings</button>
+                <button onclick="translateCurrentPage()">Translate Current Chunk</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Library Modal -->
+    <div id="libraryModal">
+        <div id="libraryContent">
+            <button id="closeLibraryModal" onclick="closeLibrary()">Close</button>
+            <h2>Library (Last 10 Books)</h2>
+            <div id="browserSupportInfo" class="browser-support-info"></div>
+            <div id="libraryList"></div>
+        </div>
+    </div>
+
+    <!-- Table of Contents Modal -->
+    <div id="tocModal">
+        <div id="tocContent">
+            <button id="closeModal" onclick="closeTableOfContents()">Close</button>
+            <h2>Table of Contents</h2>
+            <ul id="tocList"></ul>
+        </div>
+    </div>
+
+    <div id="error"></div>
+
+    <!-- Diagnostics panel (hidden by default; toggle with the Diag button) -->
+    <div id="diagPanel" class="diag-panel" style="display:none;">
+        <div class="diag-header">
+            <span>Diagnostics</span>
+            <button id="diagClearBtn" onclick="diag.clear()">Clear</button>
+        </div>
+        <div id="diagBody" class="diag-body"></div>
+    </div>
+
+    <script>
+        // ============================================================
+        // DIAGNOSTICS
+        // A lightweight logger that mirrors to both the browser console
+        // and an on-screen panel, so blank-screen / no-render issues can
+        // be diagnosed without opening DevTools. Toggle with the Diag button.
+        // ============================================================
+        const diag = {
+            entries: [],
+            max: 500,
+            on: true,
+            ts() {
+                const d = new Date();
+                return d.toLocaleTimeString(undefined, { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+            },
+            fmt(level, args) {
+                return args.map(a => {
+                    if (a instanceof Error) return a.stack || (a.name + ': ' + a.message);
+                    if (typeof a === 'object') { try { return JSON.stringify(a); } catch (e) { return String(a); } }
+                    return String(a);
+                }).join(' ');
+            },
+            write(level, args) {
+                const line = `[${this.ts()}] ${level.toUpperCase()} ${this.fmt(level, args)}`;
+                this.entries.push(line);
+                if (this.entries.length > this.max) this.entries.shift();
+                if (level === 'error') console.error(line);
+                else if (level === 'warn') console.warn(line);
+                else console.log(line);
+                this.render();
+            },
+            log(...a)   { if (this.on) this.write('log', a); },
+            info(...a)  { if (this.on) this.write('info', a); },
+            warn(...a)  { if (this.on) this.write('warn', a); },
+            error(...a) { this.write('error', a); },   // errors always log
+            render() {
+                const body = document.getElementById('diagBody');
+                if (!body) return;
+                body.textContent = this.entries.join('\n');
+                body.scrollTop = body.scrollHeight;
+            },
+            clear() {
+                this.entries = [];
+                this.render();
+            }
+        };
+
+        // Show/hide the on-screen diagnostics panel.
+        function toggleDiagPanel() {
+            const panel = document.getElementById('diagPanel');
+            const btn = document.getElementById('diagToggleBtn');
+            if (!panel) return;
+            const open = panel.style.display !== 'none';
+            panel.style.display = open ? 'none' : 'block';
+            if (btn) btn.textContent = open ? 'Diag' : 'Hide Diag';
+            if (!open) diag.render();   // refresh on open
+        }
+
+        // Check JSZip
+        if (typeof JSZip === 'undefined') {
+            console.error('JSZip library not loaded.');
+            document.getElementById('error').textContent = 'JSZip library not loaded. Check console (F12).';
+        }
+
+        // Check ePub
+        if (typeof ePub === 'undefined') {
+            console.error('EPUB.js library not loaded.');
+            document.getElementById('error').textContent = 'EPUB.js library not loaded. Check console (F12).';
+        }
+
+        // ============================================================
+        // CHUNK-READER CORE
+        // A "chunk" = a content slice of one EPUB spine chapter. Chunks
+        // always split on block-element boundaries (never mid-sentence),
+        // are addressed by {spineIndex, chunkIndex} (viewport-independent),
+        // and their translations persist in IndexedDB across refresh/resize.
+        // ============================================================
+
+        // --- IndexedDB layer: durable translation storage ---
+        // Stores: `chunks` (keyPath "id") for saved translations;
+        //         `meta`   (keyPath "key") for book-level records.
+        let _chunkDB = null;
+        function chunkDBName() { return 'epub_reader_db'; }
+
+        function openChunkDB() {
+            if (_chunkDB) return Promise.resolve(_chunkDB);
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(chunkDBName(), 1);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('chunks')) {
+                        db.createObjectStore('chunks', { keyPath: 'id' });
+                    }
+                    if (!db.objectStoreNames.contains('meta')) {
+                        db.createObjectStore('meta', { keyPath: 'key' });
+                    }
+                };
+                req.onsuccess = (e) => { _chunkDB = e.target.result; resolve(_chunkDB); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+        function _idbTx(store, mode) {
+            return openChunkDB().then(db => db.transaction(store, mode).objectStore(store));
+        }
+        function _req(req) { return new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); }); }
+        function _all(req)  { return new Promise((res, rej) => { const out = []; req.onsuccess = () => { if (req.result) { out.push(req.result); req.continue(); } else res(out); }; req.onerror = () => rej(req.error); }); }
+
+        // Chunk record: { id, fileKey, spineIndex, chunkIndex, originalText, translatedText, targetLang, model, ts }
+        function chunkId(fileKey, spineIndex, chunkIndex, targetLang) {
+            return `${fileKey}:${spineIndex}:${chunkIndex}:${targetLang}`;
+        }
+        async function putChunk(rec) {
+            const store = await _idbTx('chunks', 'readwrite');
+            await _req(store.put(rec));
+        }
+        async function getChunk(id) {
+            const store = await _idbTx('chunks', 'readonly');
+            const r = await _req(store.get(id));
+            return r || null;
+        }
+        async function getAllChunksForBook(fileKey) {
+            const store = await _idbTx('chunks', 'readonly');
+            const all = await _all(store.openCursor());
+            return all.filter(r => r.fileKey === fileKey);
+        }
+        async function deleteBookChunks(fileKey) {
+            const store = await _idbTx('chunks', 'readwrite');
+            const all = await _all(store.openCursor());
+            await Promise.all(all.filter(r => r.fileKey === fileKey).map(r => _req(store.delete(r.id))));
+        }
+
+        // --- Chunk planner ---
+        // We chunk on the TOP-LEVEL block children of <body> only — never their
+        // descendants. This is critical: if we grabbed nested blocks too (e.g. a
+        // <div> AND the <p>s inside it), then hiding a parent via display:none
+        // would cascade and hide a child we wanted to show → blank screen.
+        // Top-level children are a clean partition: showing some and hiding the
+        // rest never conflicts, because none is an ancestor of another.
+        const CHUNK_BLOCK_SELECTOR = 'p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dd, dt, figcaption, section, article, aside, main, figure';
+        const CHUNK_MEDIA_SELECTOR = 'img, svg, image, video, picture, canvas';
+        const CHUNK_CHAR_BUDGET = 5000;     // pack blocks until ~this many chars (~1.5–2 book pages)
+        const CHUNK_MIN_CHARS = 2000;       // don't close a chunk below this (floor)
+        const CHUNK_MAX_CHARS = 8000;       // overflow guard for a single huge block
+        const CHUNK_MEDIA_CHAR_COST = 1200; // synthetic char cost per image/media in a block.
+        // Without this, images ride free (0 text) and chunks over-pack them into
+        // long image walls. ~1200 chars ≈ one image's visual footprint, so a
+        // 5000-char budget holds ~4 images plus their surrounding text.
+
+        // A block is a "section starter" — a heading or thin separator — that
+        // should ALWAYS begin a new chunk and bind to the content that follows
+        // it, never cling to the tail of the previous chunk. Without this, a
+        // chapter sub-title (e.g. <p class="tustenkop">) gets glued onto the
+        // end of the prior chunk, dangling orphaned.
+        //
+        // We must be PRECISE here. The earlier "any block <= 40 chars" rule was
+        // a false positive for novels whose prose is full of short dialogue
+        // lines (e.g. "My shiver is far from fake." is 35 chars but is real
+        // content, not a divider). So we only treat a block as a starter if it
+        // is (a) a real heading tag, or (b) a DECORATIVE divider — text made
+        // solely of repeated non-alphanumeric glyphs like "====", "##", "* * *".
+        const CHUNK_HEADING_TAGS = new Set(['H1','H2','H3','H4','H5','H6']);
+        function isSectionStarter(el) {
+            if (CHUNK_HEADING_TAGS.has(el.tagName)) return true;
+            const text = (el.textContent || '').trim();
+            if (!text || text.length > 40) return false;
+            // Decorative divider: no letters/digits, only repeated symbol glyphs
+            // (with optional spaces), e.g. "====", "##", "* * *", "~~~", "·····".
+            return !/[A-Za-z0-9\u00C0-\u024F\u4e00-\u9fff]/.test(text) && text.length >= 2;
+        }
+
+        // A block qualifies for the chunk partition if it has text OR contains
+        // media. The media check is essential: image containers
+        // (e.g. <div class="illustratie-centreer">) often have ZERO text, so a
+        // text-only filter would skip them entirely — and skipped blocks are
+        // never placed in any chunk, so they never get display:none and leak
+        // onto the screen forever. Treating them as content assigns them to the
+        // nearest chunk so they show/hide with it.
+        function hasContent(el) {
+            if ((el.textContent || '').trim().length > 0) return true;
+            return !!el.querySelector(CHUNK_MEDIA_SELECTOR);
+        }
+
+        // The chunk partition is the set of LEAF blocks: block-level elements
+        // with content (text or media) that have NO content-bearing block
+        // descendant. Leaves form an ANTICHAIN — none is an ancestor of another
+        // — so showing some and hiding others can never cascade (the original
+        // blank-screen bug). This is strictly better than "direct children of a
+        // chosen level": it handles flat books (P&P), wrapper-div books
+        // (Merrill/Zwijger), AND nested sub-chapter books (Galileo's
+        // <div class="sub_chap"> containers) uniformly — every <p> is a leaf
+        // regardless of how deeply it's nested.
+        const CHUNK_MEDIA_TAGS = new Set(['IMG','SVG','IMAGE','VIDEO','PICTURE','CANVAS']);
+        // Does `el` have a media element as a DIRECT child (not nested deeper)?
+        // Used to recognize self-contained media figures (<figure><img/>…</figure>)
+        // as leaves so they travel as one unit with their caption.
+        function hasDirectMediaChild(el) {
+            for (const c of el.children) {
+                if (CHUNK_MEDIA_TAGS.has(c.tagName)) return true;
+            }
+            return false;
+        }
+
+        function getLeafBlocks(root) {
+            if (!root) return [];
+            const all = Array.from(root.querySelectorAll(CHUNK_BLOCK_SELECTOR)).filter(hasContent);
+            // A block is a LEAF if:
+            //  (a) it has no other content-bearing block descendant, OR
+            //  (b) it DIRECTLY contains media (e.g. <figure><img/><figcaption>…)
+            //      — a self-contained media unit whose caption travels with it.
+            // Case (b) is essential: otherwise <figure> is disqualified by its own
+            // <figcaption><p> and the <img> becomes an orphan that leaks.
+            return all.filter(el => {
+                if (hasDirectMediaChild(el)) return true;        // (b) media unit
+                for (const other of all) {                       // (a) no content descendant
+                    if (other !== el && el.contains(other)) return false;
+                }
+                return true;
+            });
+        }
+
+        // After showing/hiding LEAF blocks, some ancestor CONTAINERS (e.g.
+        // <div class="sub_chap">, <blockquote>) may have ALL their leaves hidden,
+        // leaving a blank vertical gap. Collapse those containers so the visible
+        // chunk sits flush; restore the rest. This only ever sets display:none on
+        // containers whose leaves are all hidden, and display:'' (clear) on the
+        // others — pure ancestor manipulation, never conflicting with leaf state.
+        function collapseHiddenContainers(root, visibleLeaves) {
+            if (!root) return;
+            const visibleSet = new Set(visibleLeaves);
+            const allBlocks = Array.from(root.querySelectorAll(CHUNK_BLOCK_SELECTOR));
+            for (const el of allBlocks) {
+                if (visibleSet.has(el)) continue;             // it's a visible leaf — leave it
+                // Is it an ancestor of any leaf at all? (containers only)
+                let leafChild = false, anyVisible = false;
+                for (const leaf of visibleSet) {
+                    if (el.contains(leaf)) { leafChild = true; anyVisible = true; break; }
+                }
+                if (!leafChild) continue;                     // not a container of leaves
+                el.style.display = anyVisible ? '' : 'none';
+            }
+        }
+
+        function buildChunkPlan(doc) {
+            const body = doc.body || doc.documentElement;
+            if (!body) {
+                diag.warn('buildChunkPlan: no body/documentElement found');
+                return { blocks: [], chunks: [{ startIdx: 0, count: 0 }], wholeBody: false };
+            }
+            // Chunk the LEAF blocks — paragraphs/images at any nesting depth,
+            // with no content-bearing block descendants. Leaves are an antichain
+            // so visibility show/hide never cascades.
+            const blocks = getLeafBlocks(body);
+            const bodyTextLen = (body.textContent || '').trim().length;
+
+            // Fallback: if no leaf blocks anywhere (e.g. text in a non-block
+            // wrapper, or a single deeply-nested chapter), treat the whole
+            // <body> as one chunk so the screen is never blank.
+            if (blocks.length === 0) {
+                diag.warn('buildChunkPlan: 0 leaf blocks; wholeBody fallback. bodyTextLen=' + bodyTextLen);
+                return { blocks: [], chunks: [{ startIdx: 0, count: 0 }], wholeBody: true };
+            }
+
+            const chunks = [];
+            let startIdx = 0, budget = 0, hasRealContent = false;  // does current chunk have non-starter text?
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                // Effective size = text length + a synthetic cost per media element.
+                // Media otherwise rides free (0 text) and chunks over-pack images.
+                const mediaCount = block.querySelectorAll(CHUNK_MEDIA_SELECTOR).length;
+                const len = block.textContent.trim().length + mediaCount * CHUNK_MEDIA_CHAR_COST;
+                const starter = isSectionStarter(block);
+                const meetsFloor = budget >= CHUNK_MIN_CHARS;
+                const wouldOverflow = (budget + len) > CHUNK_CHAR_BUDGET && meetsFloor;
+                const hugeSolo = len > CHUNK_MAX_CHARS;
+
+                // A section starter (heading / thin separator) MUST open a new
+                // chunk so it binds to the content that follows it, rather than
+                // dangling at the tail of the previous chunk. But it only forces
+                // a break if the current chunk already has REAL (non-starter)
+                // content — otherwise a run of separators/heading would each
+                // serialize into their own tiny chunks. The starter always goes
+                // to the START of the chunk it opens.
+                if (starter && hasRealContent) {
+                    chunks.push({ startIdx, count: i - startIdx });
+                    startIdx = i;
+                    budget = len;
+                    hasRealContent = false;   // new chunk starts with just a starter
+                } else if (wouldOverflow || hugeSolo) {
+                    chunks.push({ startIdx, count: i - startIdx });
+                    startIdx = i;
+                    budget = hugeSolo ? CHUNK_MAX_CHARS + 1 : len;
+                    hasRealContent = !starter && len > 0;
+                } else {
+                    budget += len;
+                    if (!starter && len > 0) hasRealContent = true;
+                }
+            }
+            if (startIdx < blocks.length) {
+                chunks.push({ startIdx, count: blocks.length - startIdx });
+            }
+            if (chunks.length === 0) chunks.push({ startIdx: 0, count: 0 });
+            const mediaCount = blocks.filter(b => !((b.textContent || '').trim()) ).length;
+            diag.info('buildChunkPlan: leafBlocks=' + blocks.length + ' (' + mediaCount + ' media)',
+                'chunks=' + chunks.length, 'bodyTextLen=' + bodyTextLen);
+            return { blocks, chunks, wholeBody: false };
+        }
+
+        // --- Chunk reader state ---
+        let currentFileKey = null;          // currentFileName, aliased for clarity
+        let currentSpineIndex = 0;          // first spine index of the current GROUP
+        let currentChunkIndex = 0;
+        let currentChunkPlan = null;        // { blocks, chunks } for the rendered group
+        let displayedSpineIndex = -1;       // first spine of the group currently in the iframe
+        let prefetchToken = 0;             // bumped on navigation; stale prefetches self-abort
+        let scrollMemory = new Map();      // chunkKey -> {top} remembered scroll per chunk (back-nav restore)
+        let lastChunkKey = null;           // chunkKey we most recently showed (so we can capture its scroll on leave)
+
+        // --- Spine groups ---
+        // Some books split prose into many tiny spine files (e.g. one scene per
+        // file, 300–800 chars). Since each spine = one chapter = at least one
+        // chunk, that would force tiny chunks. We instead MERGE consecutive
+        // tiny spines into "groups" (virtual chapters) up to ~CHUNK_CHAR_BUDGET
+        // chars, so chunks reach the normal size floor. A large spine is its own
+        // group. All navigation/chunking happens at the GROUP level.
+        let spineGroups = [];               // Array<{ firstSpine, spines:number[], estChars }>
+        let groupIndexOfSpine = new Map();  // spineIndex -> groupIndex
+
+        const GROUP_MERGE_THRESHOLD = 1500; // spines below this (chars) are merge candidates
+
+        // Walk the spine once and compute groups. Greedy: keep adding tiny
+        // consecutive spines to the current group until it reaches the char
+        // budget, then close it. Non-tiny spines are always their own group.
+        async function computeSpineGroups() {
+            spineGroups = [];
+            groupIndexOfSpine = new Map();
+            if (!book || !book.spine) return;
+            const items = book.spine.spineItems;
+            let pending = [];                // accumulating tiny spines
+            let pendingChars = 0;
+
+            const flush = () => {
+                if (pending.length === 0) return;
+                spineGroups.push({ firstSpine: pending[0], spines: pending.slice(), estChars: pendingChars });
+                pending = []; pendingChars = 0;
+            };
+
+            for (let i = 0; i < items.length; i++) {
+                const section = items[i];
+                let chars = 0;
+                try {
+                    const doc = await section.load(book.load.bind(book));
+                    const body = (doc.body) ? doc.body : (doc.querySelector ? doc.querySelector('body') : null);
+                    chars = body ? (body.textContent || '').trim().length : 0;
+                    section.unload();
+                } catch (e) {
+                    diag.warn('computeSpineGroups: could not size spine ' + i + ': ' + e.message);
+                    chars = 0;
+                }
+
+                if (chars >= GROUP_MERGE_THRESHOLD) {
+                    // Large spine: flush any pending tiny group, then this is its own group.
+                    flush();
+                    spineGroups.push({ firstSpine: i, spines: [i], estChars: chars });
+                } else {
+                    // Tiny spine: accumulate. Close the group once we hit the budget.
+                    pending.push(i);
+                    pendingChars += chars;
+                    if (pendingChars >= CHUNK_MIN_CHARS) flush();
+                }
+            }
+            flush();   // trailing tiny spines form a final group
+
+            // Post-pass: a group still below the floor (e.g. a single tiny scene
+            // flanked by large chapters) gets merged into the NEXT group so it
+            // doesn't render as an awkwardly tiny chunk. We fold from the end
+            // backward to avoid index churn.
+            for (let i = spineGroups.length - 2; i >= 0; i--) {
+                const g = spineGroups[i];
+                if (g.estChars > 0 && g.estChars < CHUNK_MIN_CHARS && spineGroups[i + 1]) {
+                    const nxt = spineGroups[i + 1];
+                    nxt.spines = g.spines.concat(nxt.spines);
+                    nxt.firstSpine = g.firstSpine;
+                    nxt.estChars += g.estChars;
+                    spineGroups.splice(i, 1);
+                }
+            }
+
+            // Build reverse lookup.
+            spineGroups.forEach((g, gi) => g.spines.forEach(si => groupIndexOfSpine.set(si, gi)));
+            diag.info('computeSpineGroups: ' + items.length + ' spines -> ' + spineGroups.length + ' groups',
+                '(merged ' + spineGroups.filter(g => g.spines.length > 1).length + ' multi-spine groups)');
+        }
+
+        // Resolve the total chunk count for a spine via its (cached) plan.
+        function chunkCountFor(spineIndex) {
+            const plan = chunkPlans.get(spineIndex);
+            return plan ? plan.chunks.length : 1;
+        }
+
+        // Get the LEAF block elements (live, from the iframe doc) for a chunk
+        // range. Re-derived from the live document each call (epub.js may
+        // rebuild the DOM on re-render), using the same getLeafBlocks() as the
+        // planner so indices line up exactly.
+        function getChunkBlocks(doc, plan, chunkIndex) {
+            if (!doc || !doc.body || !plan || !plan.chunks[chunkIndex]) return [];
+            const live = getLeafBlocks(doc.body);
+            const def = plan.chunks[chunkIndex];
+            return live.slice(def.startIdx, def.startIdx + def.count);
+        }
+
+        // --- Inline-markup placeholder substitution ---
+        // Translating with textContent loses all inline tags (<sup> footnote
+        // markers, <i>/<em> italics, <a> links, <b>/<strong>). So before sending
+        // a block to the translator we replace each inline-markup element with a
+        // numbered placeholder token ⟦N⟧ (U+27E6/U+27E7 — rare brackets a
+        // tokenizer won't merge), capture the original element's serialized HTML,
+        // and restore the tags verbatim after translation. The translator only
+        // ever sees clean prose + untranslatable tokens.
+        const INLINE_MARKUP_SELECTOR = 'sup, sub, i, em, b, strong, a, code';
+        // Match ⟦N⟧ tokens (and any residual bracket-like tokens the translator
+        // may have slightly mangled) for restoration / cleanup.
+        const PLACEHOLDER_RE = /\u27e6\s*(\d+)\s*\u27e7/g;
+
+        // Extract a block's text with inline markup replaced by ⟦N⟧ placeholders.
+        // `startN` is the starting number (so multiple blocks in a chunk share one
+        // numbering space and placeholders never collide). Returns
+        // { text, markup, nextN } where markup[N] = the element's outerHTML.
+        // Operates on a CLONE so the live DOM is never mutated.
+        function extractBlockTextWithPlaceholders(block, startN = 1) {
+            const clone = block.cloneNode(true);
+            const markup = {};
+            let n = startN - 1;
+            // Walk in document order so numbering is deterministic.
+            const els = Array.from(clone.querySelectorAll(INLINE_MARKUP_SELECTOR));
+            for (const el of els) {
+                // Skip markup nested inside another markup element — the outer
+                // one captures the whole run as a single placeholder.
+                if (el.parentElement && el.parentElement !== clone &&
+                    el.parentElement.closest(INLINE_MARKUP_SELECTOR)) {
+                    continue;
+                }
+                n++;
+                markup[n] = el.outerHTML;
+                const tok = document.createTextNode('\u27e6' + n + '\u27e7');
+                el.parentNode.replaceChild(tok, el);
+            }
+            return { text: (clone.textContent || '').trim(), markup, nextN: n + 1 };
+        }
+
+        // Escape translated prose so it's safe to assign via innerHTML alongside
+        // restored markup tags. Avoids HTML-injection from translator output.
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Gather a chunk's text with placeholders, plus the merged markup map.
+        // Returns { text, markup }. text is block-joined by \n\n. Placeholder
+        // numbering is continuous across all blocks in the chunk (no collisions).
+        function getChunkText(doc, plan, chunkIndex) {
+            const blocks = getChunkBlocks(doc, plan, chunkIndex);
+            const markup = {};
+            const parts = [];
+            let nextN = 1;
+            for (const b of blocks) {
+                const { text, markup: bm, nextN: nn } = extractBlockTextWithPlaceholders(b, nextN);
+                if (text) parts.push(text);
+                Object.assign(markup, bm);
+                nextN = nn;
+            }
+            return { text: parts.join('\n\n'), markup };
+        }
+
+        // --- Display model ---
+        // Find the element that actually scrolls the reader. In epub.js
+        // flow:'scrolled' that is rendition.manager.container (the stage wrapper
+        // it creates around the iframe); we fall back to the #reader div and the
+        // iframe contentWindow to be safe.
+        function getReaderScroller() {
+            try {
+                if (rendition && rendition.manager && rendition.manager.container) {
+                    return rendition.manager.container;
+                }
+            } catch (e) {}
+            const reader = document.getElementById('reader');
+            if (reader) return reader;
+            const iframe = document.querySelector('#reader iframe');
+            return (iframe && iframe.contentWindow) ? iframe.contentWindow : null;
+        }
+        function captureScroll(key) {
+            if (!key) return;
+            const el = getReaderScroller();
+            if (!el) return;
+            const top = (el.scrollTop !== undefined) ? el.scrollTop : (el.scrollY || 0);
+            scrollMemory.set(key, { top });
+        }
+        function restoreOrTopScroll(key) {
+            const el = getReaderScroller();
+            if (!el) return;
+            // Go back to a remembered position if we have one for this chunk;
+            // otherwise start fresh at the top of the new chunk.
+            const mem = scrollMemory.get(key);
+            const top = mem ? mem.top : 0;
+            try {
+                if (el.scrollTo) el.scrollTo(0, top);
+                else el.scrollTop = top;
+            } catch (e) { /* contentWindow guard */ }
+        }
+
+        // Capture the current chunk's scroll position. Call at the START of any
+        // navigation (before the iframe/DOM changes) so going back restores it.
+        function captureCurrentScroll() {
+            if (lastChunkKey) captureScroll(lastChunkKey);
+        }
+
+        // After leaves + containers are toggled, sync every ORPHAN element that
+        // isn't itself a block in the partition: media (img/svg/...) and inline
+        // markup (sup/sub/a/...). An orphan is shown only if its NEAREST leaf
+        // (by document order) is visible — so an <img> or <sup> sitting directly
+        // inside a container alongside text-leaves travels with whichever chunk
+        // its neighboring paragraph is in. This closes the leak where such
+        // orphans stayed visible regardless of the current chunk.
+        function syncOrphanVisibility(root, leaves, visibleLeaves) {
+            if (!root || leaves.length === 0) return;
+            const visibleSet = new Set(visibleLeaves);
+            const orphans = Array.from(root.querySelectorAll(CHUNK_MEDIA_SELECTOR + ', ' + INLINE_MARKUP_SELECTOR));
+            // For each orphan, find the nearest leaf by document position.
+            orphans.forEach(el => {
+                // Skip orphans that are INSIDE a leaf — those cascade with it.
+                for (const leaf of leaves) {
+                    if (leaf.contains(el)) {
+                        el.style.display = visibleSet.has(leaf) ? '' : 'none';
+                        return;
+                    }
+                }
+                // True orphan (not inside any leaf): bind to nearest leaf.
+                const nearest = nearestLeafByPosition(el, leaves);
+                el.style.display = (nearest && visibleSet.has(nearest)) ? '' : 'none';
+            });
+        }
+
+        // Find the leaf nearest to `el` in document order (preceding, else following).
+        function nearestLeafByPosition(el, leaves) {
+            let nearest = null, bestDist = Infinity;
+            const r = el.getRootNode ? null : null; // (no range needed; use position via compareDocumentPosition)
+            for (const leaf of leaves) {
+                let rel;
+                try { rel = leaf.compareDocumentPosition(el); }
+                catch (e) { continue; }
+                // rel bit 2 = leaf precedes el; bit 4 = leaf follows el
+                if (rel & Node.DOCUMENT_POSITION_PRECEDING) {
+                    // leaf is before el — candidate; closest preceding wins (last one)
+                    nearest = leaf;   // keep updating; later in loop = closer in doc order for preceding
+                } else if (rel & Node.DOCUMENT_POSITION_FOLLOWING) {
+                    // leaf is after el — first such is the nearest following
+                    if (!nearest) nearest = leaf;
+                    break;
+                }
+            }
+            return nearest;
+        }
+
+        // Apply visibility for the current chunk over the LEAF blocks: hide all
+        // leaves, show the chunk's. Because leaves are an antichain (none is an
+        // ancestor of another), display:none on hidden leaves can never cascade
+        // over a shown one. Then collapse ancestor CONTAINERS whose leaves are
+        // all hidden, so empty wrappers don't leave vertical gaps. Finally sync
+        // orphan media/inline elements to their container's visibility.
+        // Returns { shown, hidden, wholeBody, visibleMedia } where visibleMedia
+        // = count of top-level media elements currently displayed (used to pick
+        // an adaptive max image height).
+        function applyChunkVisibility(doc, plan, chunkIndex) {
+            if (!doc || !doc.body) return { shown: 0, hidden: 0, wholeBody: false, visibleMedia: 0 };
+            // wholeBody fallback: no leaf blocks were found, so leave the
+            // document untouched (show everything) rather than blanking it.
+            if (plan && plan.wholeBody) {
+                // Clear any stale display:none on orphans from a prior chunk pass.
+                const stale = doc.body.querySelectorAll(CHUNK_MEDIA_SELECTOR + ', ' + INLINE_MARKUP_SELECTOR);
+                stale.forEach(el => { if (el.style.display === 'none') el.style.display = ''; });
+                const visibleMedia = countVisibleTopLevelMedia(doc.body);
+                return { shown: -1, hidden: 0, wholeBody: true, visibleMedia };
+            }
+            const all = getLeafBlocks(doc.body);
+            const def = plan && plan.chunks[chunkIndex];
+            const visibleLeaves = [];
+            let shown = 0, hidden = 0;
+            all.forEach((b, i) => {
+                const inChunk = def && i >= def.startIdx && i < def.startIdx + def.count;
+                b.style.display = inChunk ? '' : 'none';
+                if (inChunk) { shown++; visibleLeaves.push(b); } else { hidden++; }
+            });
+            // Collapse ancestor containers whose leaves are all hidden.
+            collapseHiddenContainers(doc.body, visibleLeaves);
+            // Sync orphan media/inline elements: show only if their nearest leaf
+            // is in the current chunk (so they travel with the right page).
+            syncOrphanVisibility(doc.body, all, visibleLeaves);
+
+            const visibleMedia = countVisibleTopLevelMedia(doc.body);
+            return { shown, hidden, wholeBody: false, visibleMedia };
+        }
+
+        // Count media elements that are actually visible (no display:none ancestor)
+        // and not nested inside another media element (so an <svg><image/></svg>
+        // counts once). Used to size images adaptively per chunk.
+        function countVisibleTopLevelMedia(body) {
+            const all = Array.from(body.querySelectorAll(CHUNK_MEDIA_SELECTOR));
+            return all.filter(el => {
+                // hidden ancestor?
+                let cur = el;
+                while (cur && cur !== body) {
+                    if (cur.style && cur.style.display === 'none') return false;
+                    cur = cur.parentElement;
+                }
+                // nested inside another media element?
+                let p = el.parentElement;
+                while (p && p !== body) {
+                    if (CHUNK_MEDIA_TAGS.has(p.tagName.toUpperCase())) return false;
+                    p = p.parentElement;
+                }
+                return true;
+            }).length;
+        }
+
+        let currentVisibleMedia = 0;   // visible top-level media in the current chunk (for status/debug)
+
+        function updateChunkStatus(translated) {
+            const el = document.getElementById('chunkStatus');
+            if (!el) return;
+            const planCount = chunkCountFor(currentSpineIndex);
+            const totalSpine = book && book.spine ? book.spine.spineItems.length : 0;
+            const ch = currentSpineIndex + 1;
+            const mark = translated ? ' · Translated ✓' : '';
+            const imgInfo = currentVisibleMedia > 0 ? ' · ' + currentVisibleMedia + ' img' : '';
+            el.textContent = `Chapter ${ch}/${totalSpine} · Chunk ${currentChunkIndex + 1}/${planCount}${mark}${imgInfo}`;
+        }
+
+        // Ensure `currentChunkPlan` matches the currently rendered spine, then
+        // show the requested chunk. No-op if doc not ready.
+        function showChunk(chunkIndex) {
+            const iframe = document.querySelector('#reader iframe');
+            const doc = iframe && iframe.contentDocument;
+            if (!doc || !doc.body) {
+                diag.warn('showChunk(' + chunkIndex + '): iframe doc/body not ready (iframe=' + !!iframe + ')');
+                return false;
+            }
+
+            if (!currentChunkPlan) {
+                currentChunkPlan = buildChunkPlan(doc);
+                chunkPlans.set(currentSpineIndex, currentChunkPlan);
+            }
+            if (chunkIndex >= currentChunkPlan.chunks.length) chunkIndex = currentChunkPlan.chunks.length - 1;
+            if (chunkIndex < 0) chunkIndex = 0;
+
+            // Remember where we were in the OUTGOING chunk before switching, so
+            // going back to it later restores that position.
+            if (lastChunkKey) captureScroll(lastChunkKey);
+            const newKey = currentSpineIndex + ':' + chunkIndex;
+            const isBack = scrollMemory.has(newKey);
+
+            currentChunkIndex = chunkIndex;
+            const vis = applyChunkVisibility(doc, currentChunkPlan, chunkIndex);
+            currentVisibleMedia = vis.visibleMedia || 0;
+            // Adapt image max-height to how many images are visible in this chunk.
+            setImageChunkHeight(doc, vis.visibleMedia);
+            // Scroll: restore remembered position on back-nav, else top of chunk.
+            // (Defer a tick so the just-shown/hide display changes have laid out.)
+            setTimeout(() => restoreOrTopScroll(newKey), 0);
+            diag.info('showChunk: spine=' + currentSpineIndex, 'chunk=' + chunkIndex + '/' + currentChunkPlan.chunks.length,
+                'wholeBody=' + vis.wholeBody, vis.wholeBody ? '' : ('shown=' + vis.shown + ' hidden=' + vis.hidden),
+                isBack ? '(restoring scroll)' : '(scroll to top)');
+
+            lastChunkKey = newKey;
+
+            // Auto-apply saved translation if present, else reset to original.
+            (async () => {
+                const id = chunkId(currentFileName, currentSpineIndex, chunkIndex, translationSettings.targetLanguage);
+                const rec = translationSettings.cacheTranslations ? await getChunk(id) : null;
+                if (rec && rec.translatedText) {
+                    // Use stored markup if present; otherwise re-derive from the
+                    // live blocks (so reloads of old records still restore tags).
+                    let mu = rec.markup;
+                    if (!mu) { const tmp = getChunkText(doc, currentChunkPlan, chunkIndex); mu = tmp.markup; }
+                    applyChunkTranslation(doc, currentChunkPlan, chunkIndex, rec.translatedText, mu, /*showOriginal*/false);
+                    document.getElementById('toggleTranslationBtn').style.display = 'inline-block';
+                    document.getElementById('toggleTranslationBtn').textContent = 'Show Original';
+                    updateChunkStatus(true);
+                    diag.info('showChunk: applied cached translation for ' + id);
+                } else {
+                    resetChunkToOriginal(doc, currentChunkPlan, chunkIndex);
+                    document.getElementById('toggleTranslationBtn').style.display = 'none';
+                    updateChunkStatus(false);
+                }
+            })();
+            return true;
+        }
+
+        // Per-chunk translation application. `markup` is the chunk-wide
+        // placeholder→outerHTML map (from getChunkText). Each block keeps:
+        //   data-original-html  — the block's original innerHTML (for Show Original)
+        //   data-translated-html — the block's translated innerHTML (for toggle)
+        // so switching views never re-hits the translator and never loses markup.
+        function applyChunkTranslation(doc, plan, chunkIndex, translatedText, markup, showOriginal) {
+            const blocks = getChunkBlocks(doc, plan, chunkIndex);
+            const parts = translatedText.split(/\n\s*\n/).map(s => s.trim()).filter(s => s);
+            blocks.forEach((b, i) => {
+                // Capture the original HTML once, before first translation.
+                if (!b.getAttribute('data-original-html')) {
+                    b.setAttribute('data-original-html', b.innerHTML);
+                }
+                const part = parts[i] || parts[parts.length - 1] || '';
+                if (part) {
+                    // Build the translated HTML (placeholders restored) and cache it.
+                    let html = escapeHtml(part).replace(PLACEHOLDER_RE, (m, num) =>
+                        (markup && markup[num]) ? markup[num] : ''
+                    ).replace(/\u27e6[^\u27e7]*\u27e7/g, '');
+                    b.setAttribute('data-translated-html', html);
+                }
+                b.classList.add('translated-element');
+                if (showOriginal) {
+                    const oh = b.getAttribute('data-original-html');
+                    if (oh != null) b.innerHTML = oh;
+                } else if (b.getAttribute('data-translated-html') != null) {
+                    b.innerHTML = b.getAttribute('data-translated-html');
+                }
+            });
+        }
+        function resetChunkToOriginal(doc, plan, chunkIndex) {
+            const blocks = getChunkBlocks(doc, plan, chunkIndex);
+            blocks.forEach(b => {
+                const oh = b.getAttribute('data-original-html');
+                if (oh != null) b.innerHTML = oh;   // restore full markup
+                b.removeAttribute('data-translated-html');
+                b.classList.remove('translated-element');
+            });
+        }
+
+        // Toggle the current chunk between original and translated views. With
+        // per-block data-original-html / data-translated-html cached, this just
+        // swaps innerHTML — no re-translation, no markup loss.
+        function toggleTranslatedContent() {
+            const iframe = document.querySelector('#reader iframe');
+            const doc = iframe && iframe.contentDocument;
+            if (!doc || !currentChunkPlan) return;
+            const blocks = getChunkBlocks(doc, currentChunkPlan, currentChunkIndex);
+            const hasTranslated = blocks.some(b => b.getAttribute('data-translated-html') != null);
+            if (!hasTranslated) return;
+            // Are we currently showing the translation? (innerHTML matches translated cache)
+            const showingTranslated = blocks.some(b =>
+                b.getAttribute('data-translated-html') != null &&
+                b.innerHTML === b.getAttribute('data-translated-html'));
+            blocks.forEach(b => {
+                if (showingTranslated) {
+                    const oh = b.getAttribute('data-original-html');
+                    if (oh != null) b.innerHTML = oh;
+                } else {
+                    const th = b.getAttribute('data-translated-html');
+                    if (th != null) b.innerHTML = th;
+                }
+            });
+            const btn = document.getElementById('toggleTranslationBtn');
+            btn.textContent = showingTranslated ? 'Show Translation' : 'Show Original';
+            updateChunkStatus(!showingTranslated);
+        }
+
+        // --- Translation engine (current chunk + prefetch next 2) ---
+        async function translateChunk(spineIndex, chunkIndex, { applyToDom = true } = {}) {
+            const plan = chunkPlans.get(spineIndex);
+            if (!plan) { diag.warn('translateChunk: no plan for spine=' + spineIndex); return null; }
+            // For the displayed spine, read live text; otherwise read from plan blocks.
+            let text, markup;
+            if (spineIndex === displayedSpineIndex && applyToDom) {
+                const iframe = document.querySelector('#reader iframe');
+                const doc = iframe && iframe.contentDocument;
+                if (!doc) { diag.warn('translateChunk: no iframe doc'); return null; }
+                ({ text, markup } = getChunkText(doc, plan, chunkIndex));
+            } else {
+                ({ text, markup } = getChunkTextFromPlan(plan, chunkIndex));
+            }
+            if (!text) { diag.warn('translateChunk: empty text spine=' + spineIndex, 'chunk=' + chunkIndex); return null; }
+
+            const targetLang = translationSettings.targetLanguage;
+            const id = chunkId(currentFileName, spineIndex, chunkIndex, targetLang);
+            if (translationSettings.cacheTranslations) {
+                const cached = await getChunk(id);
+                if (cached && cached.translatedText) {
+                    diag.info('translateChunk: CACHE HIT', id);
+                    if (applyToDom && spineIndex === displayedSpineIndex) {
+                        const iframe = document.querySelector('#reader iframe');
+                        const doc = iframe && iframe.contentDocument;
+                        // Use stored markup if present (new records), else live-rederive.
+                        const mu = cached.markup || markup || {};
+                        if (doc) applyChunkTranslation(doc, plan, chunkIndex, cached.translatedText, mu, false);
+                    }
+                    return cached.translatedText;
+                }
+            }
+
+            diag.info('translateChunk: translating', id, 'len=' + text.length, 'applyToDom=' + applyToDom);
+            let translated;
+            try {
+                translated = await callTranslationAPI(text);
+            } catch (e) {
+                diag.error('translateChunk: API error', id, e.message);
+                if (applyToDom) {
+                    errorDiv.textContent = `Translation error: ${e.message}`;
+                }
+                return null;
+            }
+            if (translationSettings.cacheTranslations) {
+                await putChunk({
+                    id, fileKey: currentFileName, spineIndex, chunkIndex,
+                    originalText: text, translatedText: translated,
+                    markup,                    // store markup so reload can restore
+                    targetLang, model: translationSettings.model, ts: Date.now()
+                });
+                diag.info('translateChunk: stored', id, 'outLen=' + translated.length);
+            }
+            if (applyToDom && spineIndex === displayedSpineIndex) {
+                const iframe = document.querySelector('#reader iframe');
+                const doc = iframe && iframe.contentDocument;
+                if (doc) {
+                    applyChunkTranslation(doc, plan, chunkIndex, translated, markup, false);
+                    document.getElementById('toggleTranslationBtn').style.display = 'inline-block';
+                    document.getElementById('toggleTranslationBtn').textContent = 'Show Original';
+                    updateChunkStatus(true);
+                }
+            }
+            return translated;
+        }
+
+        // Read chunk text with placeholders purely from a cached plan (for
+        // prefetching non-displayed spines). Returns { text, markup }.
+        function getChunkTextFromPlan(plan, chunkIndex) {
+            if (!plan || !plan.chunks[chunkIndex]) return { text: '', markup: {} };
+            const def = plan.chunks[chunkIndex];
+            const markup = {};
+            const parts = [];
+            let nextN = 1;
+            for (const b of plan.blocks.slice(def.startIdx, def.startIdx + def.count)) {
+                const { text, markup: bm, nextN: nn } = extractBlockTextWithPlaceholders(b, nextN);
+                if (text) parts.push(text);
+                Object.assign(markup, bm);
+                nextN = nn;
+            }
+            return { text: parts.join('\n\n'), markup };
+        }
+
+        // Build a plan for a GROUP (not a single spine) without rendering it.
+        // Loads each member spine, concatenates the chunk-root blocks of all
+        // members into one virtual body, then runs the standard planner — the
+        // same merge that renderGroup does live, so prefetch chunks match what
+        // the user will eventually see.
+        async function ensurePlanForGroup(groupIndex) {
+            const group = spineGroups[groupIndex];
+            if (!group) return null;
+            const first = group.firstSpine;
+            if (chunkPlans.has(first)) return chunkPlans.get(first);
+            if (!book || !book.spine) return null;
+            try {
+                // Merge every member's chunk-root blocks into one detached body.
+                const merged = document.createElement('div');
+                for (const si of group.spines) {
+                    const section = book.spine.get(si);
+                    if (!section) continue;
+                    const docEl = await section.load(book.load.bind(book));
+                    const doc = docEl.ownerDocument || (docEl.documentElement ? docEl.documentElement.ownerDocument : null);
+                    const body = doc ? (doc.body || doc.querySelector('body')) : null;
+                    if (!body) { section.unload(); continue; }
+                    const blocks = getLeafBlocks(body);
+                    for (const b of blocks) merged.appendChild(b);
+                    section.unload();
+                }
+                // buildChunkPlan expects a doc-like with a .body; wrap merged.
+                const fakeDoc = { body: merged };
+                const plan = buildChunkPlan(fakeDoc);
+                chunkPlans.set(first, plan);
+                diag.info('ensurePlanForGroup(' + groupIndex + ', first=' + first + '): chunks=' + plan.chunks.length + ' spines=' + group.spines.length);
+                return plan;
+            } catch (e) {
+                diag.warn('ensurePlanForGroup(' + groupIndex + ') failed: ' + e.message);
+                return null;
+            }
+        }
+
+        // Build a plan for a spine we haven't rendered, using section.load().
+        // (Legacy single-spine path; now resolves the spine's GROUP so plans
+        // match the merged display.)
+        async function ensurePlanFor(spineIndex) {
+            const gi = groupIndexOfSpine.has(spineIndex) ? groupIndexOfSpine.get(spineIndex) : 0;
+            return ensurePlanForGroup(gi);
+        }
+
+        // Prefetch up to N chunks ahead (translates into IDB, no DOM writes).
+        // Walks GROUPS (the display unit), not raw spines.
+        async function prefetchAhead(spineIndex, chunkIndex, count, token) {
+            if (!translationSettings.apiKey) return;
+            let gi = groupIndexOfSpine.has(spineIndex) ? groupIndexOfSpine.get(spineIndex) : 0;
+            let c = chunkIndex;
+            for (let n = 0; n < count; n++) {
+                if (token !== prefetchToken) return;        // user navigated away; abort
+                const plan = await ensurePlanForGroup(gi);
+                if (!plan) return;
+                if (c + 1 < plan.chunks.length) {
+                    c++;
+                } else {
+                    // Cross to the next group's first chunk.
+                    if (gi >= spineGroups.length - 1) return;
+                    gi++; c = 0;
+                }
+                const targetSpine = spineGroups[gi].firstSpine;
+                try { await translateChunk(targetSpine, c, { applyToDom: false }); }
+                catch (e) { diag.warn('prefetch error', targetSpine, c, e.message); }
+                if (token !== prefetchToken) return;
+            }
+        }
+
+        // User-triggered translation of the visible chunk.
+        async function translateCurrentChunk() {
+            // In browser-translation mode, AI translation is a no-op. Guide the
+            // user to the browser's built-in translate instead of erroring.
+            if (translationSettings.provider !== 'local-proxy') {
+                errorDiv.textContent = 'AI translation is off. Use your browser\'s translate: right-click the page → "Translate to…". (To enable AI translation, open Translation Settings and set provider to "Local proxy".)';
+                return;
+            }
+            if (!translationSettings.apiKey) {
+                showTranslationSettings();
+                errorDiv.textContent = 'Please configure API settings first.';
+                return;
+            }
+            closeTranslationSettings();
+            translationOverlay.style.display = 'flex';
+            const status = document.querySelector('.translation-status');
+            try {
+                status && (status.textContent = `Translating chunk ${currentChunkIndex + 1}…`);
+                await translateChunk(currentSpineIndex, currentChunkIndex, { applyToDom: true });
+                errorDiv.textContent = 'Translation completed successfully!';
+            } catch (e) {
+                errorDiv.textContent = `Translation error: ${e.message}`;
+            } finally {
+                translationOverlay.style.display = 'none';
+            }
+        }
+
+        // Global variables
+        let book = null;
+        let rendition = null;
+        let currentFileName = null;
+        let currentFilePath = null;
+        let chineseFontsEnabled = false;
+        let longPressTimer = null;
+        let longPressTarget = null;
+        let storedFileHandles = new Map();
+        let translationCache = new Map();
+        let currentPageTranslated = false;
+        let chunkPlans = new Map();        // spineIndex -> { blocks, chunks }
+
+        // Translation settings with model support.
+        // provider: 'browser' (default) — rely on the browser/Chrome built-in
+        //           translate; AI translation is a no-op. No server needed.
+        //           'local-proxy' — call the Flask proxy at localhost:8000
+        //           (kept for when AI translation is re-enabled).
+        const translationSettings = {
+            provider: localStorage.getItem('translation-provider') || 'browser',
+            apiKey: localStorage.getItem('translation-api-key') || '',
+            model: localStorage.getItem('translation-model') || 'sonnet',
+            targetLanguage: localStorage.getItem('translation-target-language') || 'zh-CN',
+            prompt: localStorage.getItem('translation-prompt') || 'Translate the following text accurately while preserving the original tone, style, and formatting. Maintain any technical terms, proper nouns, and special formatting.',
+            preserveFormatting: localStorage.getItem('translation-preserve-formatting') !== 'false',
+            cacheTranslations: localStorage.getItem('translation-cache') !== 'false'
+        };
+
+        // DOM elements
+        const reader = document.getElementById('reader');
+        const input = document.getElementById('epubInput');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const mobilePrevBtn = document.getElementById('mobilePrevBtn');
+        const mobileNextBtn = document.getElementById('mobileNextBtn');
+        const tocBtn = document.getElementById('tocBtn');
+        const tocModal = document.getElementById('tocModal');
+        const tocList = document.getElementById('tocList');
+        const libraryModal = document.getElementById('libraryModal');
+        const libraryList = document.getElementById('libraryList');
+        const browserSupportInfo = document.getElementById('browserSupportInfo');
+        const dragOverlay = document.getElementById('dragOverlay');
+        const errorDiv = document.getElementById('error');
+        const translationOverlay = document.getElementById('translationOverlay');
+        const translationSettingsModal = document.getElementById('translationSettingsModal');
+        const debugInfo = document.getElementById('debugInfo');
+
+        // Browser capability detection
+        const hasFileSystemAccess = 'showOpenFilePicker' in window;
+        const hasFileHandling = 'launchQueue' in window;
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+                         ('ontouchstart' in window) ||
+                         (navigator.maxTouchPoints > 0);
+        const browserInfo = getBrowserInfo();
+
+        // Translation functions
+        function showTranslationSettings() {
+            loadTranslationSettings();
+            translationSettingsModal.style.display = 'flex';
+        }
+
+        function closeTranslationSettings() {
+            translationSettingsModal.style.display = 'none';
+        }
+
+        function loadTranslationSettings() {
+            document.getElementById('providerSelect').value = translationSettings.provider;
+            document.getElementById('apiKey').value = translationSettings.apiKey;
+            document.getElementById('modelSelect').value = translationSettings.model;
+            document.getElementById('targetLanguage').value = translationSettings.targetLanguage;
+            document.getElementById('translationPrompt').value = translationSettings.prompt;
+            document.getElementById('preserveFormatting').checked = translationSettings.preserveFormatting;
+            document.getElementById('cacheTranslations').checked = translationSettings.cacheTranslations;
+        }
+
+        function updateModel() {
+            translationSettings.model = document.getElementById('modelSelect').value;
+            localStorage.setItem('translation-model', translationSettings.model);
+        }
+
+        function updateProvider() {
+            translationSettings.provider = document.getElementById('providerSelect').value;
+            localStorage.setItem('translation-provider', translationSettings.provider);
+            // In browser mode the API-key / test-connection controls are inert;
+            // leave them visible so the user can pre-fill a key before switching.
+        }
+
+        function saveTranslationSettings() {
+            translationSettings.provider = document.getElementById('providerSelect').value;
+            translationSettings.apiKey = document.getElementById('apiKey').value;
+            translationSettings.model = document.getElementById('modelSelect').value;
+            translationSettings.targetLanguage = document.getElementById('targetLanguage').value;
+            translationSettings.prompt = document.getElementById('translationPrompt').value;
+            translationSettings.preserveFormatting = document.getElementById('preserveFormatting').checked;
+            translationSettings.cacheTranslations = document.getElementById('cacheTranslations').checked;
+
+            // Save to localStorage
+            localStorage.setItem('translation-provider', translationSettings.provider);
+            localStorage.setItem('translation-api-key', translationSettings.apiKey);
+            localStorage.setItem('translation-model', translationSettings.model);
+            localStorage.setItem('translation-target-language', translationSettings.targetLanguage);
+            localStorage.setItem('translation-prompt', translationSettings.prompt);
+            localStorage.setItem('translation-preserve-formatting', translationSettings.preserveFormatting);
+            localStorage.setItem('translation-cache', translationSettings.cacheTranslations);
+
+            showApiStatus('Settings saved successfully!', 'success');
+        }
+
+        function showApiStatus(message, type) {
+            const apiStatus = document.getElementById('apiStatus');
+            apiStatus.textContent = message;
+            apiStatus.className = `api-status ${type}`;
+            apiStatus.style.display = 'block';
+        }
+
+        function showDebugInfo(info) {
+            debugInfo.textContent = info;
+            debugInfo.style.display = 'block';
+        }
+
+        async function testAPIConnection() {
+            if (!translationSettings.apiKey) {
+                showApiStatus('Please enter an API key first.', 'error');
+                return;
+            }
+
+            try {
+                showApiStatus('Testing connection...', 'info');
+
+                const response = await fetch('http://localhost:8000/test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        apiKey: translationSettings.apiKey,
+                        model: translationSettings.model
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showApiStatus(`Success! Connected to ${data.model}`, 'success');
+                    showDebugInfo(`Test response: "${data.test_response}"`);
+                } else {
+                    showApiStatus(`Error: ${data.message}`, 'error');
+                    showDebugInfo(JSON.stringify(data.details, null, 2));
+                }
+            } catch (error) {
+                showApiStatus(`Connection error: ${error.message}`, 'error');
+                showDebugInfo(`Make sure the Python backend is running at http://localhost:8000\n\nError: ${error.toString()}`);
+            }
+        }
+
+        async function callTranslationAPI(text, debugMode = false) {
+            // In 'browser' mode (default), AI translation is intentionally a
+            // no-op: the user is expected to use the browser's built-in
+            // translate (right-click → Translate). We bail with a clear message
+            // instead of hitting a dead localhost proxy.
+            if (translationSettings.provider !== 'local-proxy') {
+                throw new Error('AI translation is not enabled. Use your browser\'s built-in translate (right-click → Translate), or set Translation provider to "Local proxy" and run the Flask backend.');
+            }
+            if (!navigator.onLine) {
+                throw new Error('Offline — AI translation requires a network connection.');
+            }
+
+            const apiKey = translationSettings.apiKey;
+
+            if (!apiKey) {
+                throw new Error('API key is required');
+            }
+
+            try {
+                const response = await fetch('http://localhost:8000/translate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        apiKey: apiKey,
+                        text: text,
+                        targetLanguage: translationSettings.targetLanguage,
+                        model: translationSettings.model
+                    })
+                });
+
+                const data = await response.json();
+
+                if (debugMode) {
+                    showDebugInfo(`Response: ${JSON.stringify(data, null, 2)}`);
+                }
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Translation failed');
+                }
+
+                return data.translatedText;
+
+            } catch (error) {
+                if (debugMode) {
+                    showDebugInfo(`Error: ${error.toString()}\n\nMake sure the Python backend is running.`);
+                }
+                throw error;
+            }
+        }
+
+        function getLanguageName(code) {
+            const languages = {
+                'zh-CN': 'Chinese (Simplified)',
+                'zh-TW': 'Chinese (Traditional)',
+                'ja': 'Japanese',
+                'ko': 'Korean',
+                'es': 'Spanish',
+                'fr': 'French',
+                'de': 'German',
+                'ru': 'Russian',
+                'ar': 'Arabic',
+                'hi': 'Hindi',
+                'pt': 'Portuguese',
+                'it': 'Italian'
+            };
+            return languages[code] || code;
+        }
+
+        async function translateCurrentPage() {
+            // Legacy entry point: the chunk model now replaces full-page translation.
+            // Translate only the currently visible chunk.
+            await translateCurrentChunk();
+        }
+
+        // (The old full-page bulk translate + its helpers were removed: the chunk
+        // model's applyChunkTranslation / resetChunkToOriginal / toggleTranslatedContent
+        // in the CHUNK-READER CORE block above now handle translation per chunk.)
+
+        // Browser info function
+        function getBrowserInfo() {
+            const userAgent = navigator.userAgent;
+            let name = 'Unknown';
+            let canOpenFiles = false;
+            let dragDropOnly = false;
+
+            if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
+                name = 'Chrome';
+                canOpenFiles = !isMobile && hasFileSystemAccess;
+                dragDropOnly = isMobile;
+            } else if (userAgent.includes('Edg')) {
+                name = 'Edge';
+                canOpenFiles = !isMobile && hasFileSystemAccess;
+                dragDropOnly = isMobile;
+            } else if (userAgent.includes('Firefox')) {
+                name = 'Firefox';
+                canOpenFiles = !isMobile;
+                dragDropOnly = isMobile;
+            } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
+                name = 'Safari';
+                canOpenFiles = !isMobile;
+                dragDropOnly = isMobile;
+            }
+
+            return { name, canOpenFiles, dragDropOnly, isMobile };
+        }
+
+        // Update browser support info
+        function updateBrowserSupportInfo() {
+            let infoHTML = '';
+
+            if (browserInfo.isMobile) {
+                infoHTML = `
+                    <strong>📱 ${browserInfo.name} Mobile:</strong><br>
+                    • Drag & drop EPUB files onto library items to reopen<br>
+                    • Use the main file input to browse for new books<br>
+                    • File paths are shown for reference only
+                `;
+            } else if (browserInfo.name === 'Safari') {
+                infoHTML = `
+                    <strong>🖥️ ${browserInfo.name} Desktop:</strong><br>
+                    • Click library items for smart file browser (may remember locations)<br>
+                    • Drag & drop EPUB files anywhere or onto specific items<br>
+                    • Best file path preservation among browsers
+                `;
+            } else if (browserInfo.canOpenFiles) {
+                infoHTML = `
+                    <strong>🖥️ ${browserInfo.name} Desktop:</strong><br>
+                    • Click library items to browse for files (enhanced file picker)<br>
+                    • Drag & drop EPUB files anywhere or onto specific items<br>
+                    • Path information shown for manual navigation
+                `;
+            } else {
+                infoHTML = `
+                    <strong>🖥️ ${browserInfo.name} Desktop:</strong><br>
+                    • Click library items to open file browser<br>
+                    • Drag & drop EPUB files anywhere or onto specific items<br>
+                    • Copy file paths to navigate manually
+                `;
+            }
+
+            browserSupportInfo.innerHTML = infoHTML;
+        }
+
+        // File handling functions
+        async function openFileWithSmartPicker() {
+            if (!browserInfo.canOpenFiles) {
+                return null;
+            }
+
+            try {
+                if (hasFileSystemAccess) {
+                    const fileHandles = await window.showOpenFilePicker({
+                        types: [{
+                            description: 'EPUB files',
+                            accept: { 'application/epub+zip': ['.epub'] }
+                        }],
+                        multiple: false
+                    });
+
+                    const fileHandle = fileHandles[0];
+                    const file = await fileHandle.getFile();
+
+                    // Store file handle for future access
+                    storedFileHandles.set(file.name, fileHandle);
+
+                    return file;
+                } else {
+                    // Traditional file input
+                    return new Promise((resolve) => {
+                        const fileInput = document.createElement('input');
+                        fileInput.type = 'file';
+                        fileInput.accept = '.epub';
+                        fileInput.onchange = (e) => {
+                            const file = e.target.files[0];
+                            resolve(file || null);
+                        };
+                        fileInput.click();
+                    });
+                }
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('File picker error:', error);
+                }
+                return null;
+            }
+        }
+
+        async function reopenStoredFile(fileName) {
+            if (!hasFileSystemAccess || !storedFileHandles.has(fileName)) {
+                return null;
+            }
+
+            try {
+                const fileHandle = storedFileHandles.get(fileName);
+                const file = await fileHandle.getFile();
+                console.log(`Successfully reopened stored file: ${fileName}`);
+                return file;
+            } catch (error) {
+                console.error(`Error reopening stored file ${fileName}:`, error);
+                // Remove invalid handle
+                storedFileHandles.delete(fileName);
+                return null;
+            }
+        }
+
+        async function copyPathToClipboard(filePath, fileName) {
+            try {
+                await navigator.clipboard.writeText(filePath);
+                errorDiv.textContent = `✅ File path copied to clipboard: ${filePath}`;
+            } catch (error) {
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = filePath;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                errorDiv.textContent = `📋 File path copied: ${filePath}`;
+            }
+        }
+
+        // Drag and drop setup
+        function setupDragAndDrop() {
+            // Global drag and drop
+            document.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                if (isDraggedFileEpub(e)) {
+                    dragOverlay.classList.add('active');
+                }
+            });
+
+            document.addEventListener('dragleave', (e) => {
+                // Only hide if we're leaving the document entirely
+                if (!e.relatedTarget || e.relatedTarget.nodeName === 'HTML') {
+                    dragOverlay.classList.remove('active');
+                }
+            });
+
+            document.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dragOverlay.classList.remove('active');
+
+                const files = Array.from(e.dataTransfer.files);
+                const epubFile = files.find(file => file.name.toLowerCase().endsWith('.epub'));
+
+                if (epubFile) {
+                    loadEpubFile(epubFile);
+                } else {
+                    errorDiv.textContent = 'Please drop an EPUB file.';
+                }
+            });
+        }
+
+        function isDraggedFileEpub(e) {
+            const items = Array.from(e.dataTransfer.items);
+            return items.some(item =>
+                item.kind === 'file' &&
+                item.type === 'application/epub+zip' ||
+                (item.kind === 'file' && item.type === '' && e.dataTransfer.files.length > 0)
+            );
+        }
+
+        function setupLibraryItemDragDrop(element, fileName) {
+            element.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const files = Array.from(e.dataTransfer.items);
+                const hasEpubFile = files.some(item =>
+                    item.kind === 'file' &&
+                    (item.type === 'application/epub+zip' ||
+                     (item.type === '' && item.getAsFile()?.name.toLowerCase().endsWith('.epub')))
+                );
+
+                if (hasEpubFile) {
+                    element.classList.add('drag-over');
+                }
+            });
+
+            element.addEventListener('dragleave', (e) => {
+                e.stopPropagation();
+                if (!element.contains(e.relatedTarget)) {
+                    element.classList.remove('drag-over');
+                }
+            });
+
+            element.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                element.classList.remove('drag-over');
+
+                const files = Array.from(e.dataTransfer.files);
+                const epubFile = files.find(file => file.name.toLowerCase().endsWith('.epub'));
+
+                if (epubFile) {
+                    // Check if dropped file matches library item
+                    if (epubFile.name === fileName) {
+                        loadEpubFile(epubFile);
+                        closeLibrary();
+                        errorDiv.textContent = `✅ Opened "${fileName}" from drag & drop!`;
+                    } else {
+                        // Different file - ask user
+                        if (confirm(`You dropped "${epubFile.name}" but this library item is "${fileName}". Open the dropped file instead?`)) {
+                            loadEpubFile(epubFile);
+                            closeLibrary();
+                        }
+                    }
+                } else {
+                    errorDiv.textContent = 'Please drop an EPUB file.';
+                }
+            });
+        }
+
+        // Library functions
+        function getLibrary() {
+            const library = localStorage.getItem('epub-library');
+            return library ? JSON.parse(library) : [];
+        }
+
+        function saveLibrary(library) {
+            localStorage.setItem('epub-library', JSON.stringify(library));
+        }
+
+        function addToLibrary(fileName, filePath, title = null) {
+            let library = getLibrary();
+
+            // Remove existing entry if it exists
+            library = library.filter(item => item.fileName !== fileName);
+
+            // Add new entry at the beginning
+            const newEntry = {
+                fileName: fileName,
+                filePath: filePath,
+                title: title || fileName.replace(/\.[^/.]+$/, ""), // Remove extension for title
+                addedDate: new Date().toISOString(),
+                lastOpened: new Date().toISOString()
+            };
+
+            library.unshift(newEntry);
+
+            // Keep only last 10 books
+            library = library.slice(0, 10);
+
+            saveLibrary(library);
+            console.log('Added to library:', newEntry);
+        }
+
+        function removeFromLibrary(fileName, deleteProgress = false) {
+            let library = getLibrary();
+            library = library.filter(item => item.fileName !== fileName);
+            saveLibrary(library);
+
+            if (deleteProgress) {
+                // Delete reading progress when explicitly removed
+                localStorage.removeItem(`epub-position-${fileName}`);
+                console.log(`Removed from library and deleted progress: ${fileName}`);
+            } else {
+                console.log(`Removed from library (progress kept): ${fileName}`);
+            }
+
+            // Also remove stored file handle
+            storedFileHandles.delete(fileName);
+
+            // Purge any saved chunk translations from IndexedDB so we don't
+            // leave orphaned (potentially multi-MB) data behind.
+            deleteBookChunks(fileName).catch(err => {
+                console.warn(`Could not purge translations for ${fileName}:`, err);
+            });
+        }
+
+        function updateLastOpened(fileName) {
+            let library = getLibrary();
+            const index = library.findIndex(item => item.fileName === fileName);
+            if (index !== -1) {
+                library[index].lastOpened = new Date().toISOString();
+                // Move to front
+                const item = library.splice(index, 1)[0];
+                library.unshift(item);
+                saveLibrary(library);
+            }
+        }
+
+        function renderLibrary() {
+            const library = getLibrary();
+            libraryList.innerHTML = '';
+
+            if (library.length === 0) {
+                libraryList.innerHTML = '<div class="empty-library">No books in library yet.<br>Open an EPUB file to add it to your library.</div>';
+                return;
+            }
+
+            library.forEach((book, index) => {
+                const item = document.createElement('div');
+                item.className = 'library-item';
+                item.dataset.fileName = book.fileName;
+                item.dataset.filePath = book.filePath;
+
+                // Get reading progress
+                const savedPosition = localStorage.getItem(`epub-position-${book.fileName}`);
+                const progressText = savedPosition ? 'Has saved position' : 'Not started';
+
+                // Format dates
+                const lastOpened = new Date(book.lastOpened).toLocaleDateString();
+
+                // Determine available actions and styling
+                let actionsHTML = '';
+                let actionsClass = '';
+
+                if (browserInfo.isMobile) {
+                    actionsHTML = `📥 Drag & drop "${book.fileName}" onto this item to reopen`;
+                    actionsClass = 'drag-only';
+                } else if (browserInfo.name === 'Safari') {
+                    actionsHTML = `📁 Click to browse (may remember location) • 📥 Drag & drop here`;
+                    actionsClass = '';
+                } else if (browserInfo.canOpenFiles) {
+                    actionsHTML = `📁 Click to browse for file • 📥 Drag & drop here<br>
+                                   📂 Path: ${book.filePath}
+                                   <button class="copy-path-btn" onclick="copyPathToClipboard('${book.filePath.replace(/'/g, "\\'")}', '${book.fileName}')">Copy Path</button>`;
+                    actionsClass = 'path-info';
+                } else {
+                    actionsHTML = `📥 Drag & drop "${book.fileName}" here to reopen<br>
+                                   📂 Path: ${book.filePath}
+                                   <button class="copy-path-btn" onclick="copyPathToClipboard('${book.filePath.replace(/'/g, "\\'")}', '${book.fileName}')">Copy Path</button>`;
+                    actionsClass = 'path-info';
+                }
+
+                item.innerHTML = `
+                    <div class="library-item-title">${book.title}</div>
+                    <div class="library-item-info">File: ${book.fileName}</div>
+                    <div class="library-item-info">Last opened: ${lastOpened}</div>
+                    <div class="library-item-progress">${progressText}</div>
+                    <div class="library-item-actions ${actionsClass}">${actionsHTML}</div>
+                    <div class="delete-indicator">×</div>
+                `;
+
+                // Add click handler to open book (only for non-mobile or specific browsers)
+                if (browserInfo.canOpenFiles) {
+                    item.addEventListener('click', (e) => {
+                        // Don't trigger on copy button clicks
+                        if (e.target.classList.contains('copy-path-btn')) {
+                            return;
+                        }
+                        if (!item.classList.contains('long-pressing')) {
+                            openBookFromLibrary(book.fileName, book.filePath);
+                        }
+                    });
+                }
+
+                // Add long press handlers
+                setupLongPress(item);
+
+                // Add drag and drop support
+                setupLibraryItemDragDrop(item, book.fileName);
+
+                libraryList.appendChild(item);
+            });
+        }
+
+        function setupLongPress(element) {
+            let pressTimer = null;
+
+            function startPress(e) {
+                e.preventDefault();
+                pressTimer = setTimeout(() => {
+                    element.classList.add('long-pressing');
+                    console.log('Long press detected on:', element.dataset.fileName);
+                }, 500); // 500ms for long press
+            }
+
+            function endPress(e) {
+                if (pressTimer) {
+                    clearTimeout(pressTimer);
+                    pressTimer = null;
+                }
+
+                if (element.classList.contains('long-pressing')) {
+                    // Confirm deletion
+                    const fileName = element.dataset.fileName;
+                    if (confirm(`Delete "${fileName}" from library?\n\nThis will also delete your reading progress for this book.`)) {
+                        removeFromLibrary(fileName, true); // true = delete progress
+                        renderLibrary();
+                        errorDiv.textContent = `"${fileName}" removed from library and reading progress deleted.`;
+                    }
+                    element.classList.remove('long-pressing');
+                }
+            }
+
+            function cancelPress() {
+                if (pressTimer) {
+                    clearTimeout(pressTimer);
+                    pressTimer = null;
+                }
+                element.classList.remove('long-pressing');
+            }
+
+            // Mouse events
+            element.addEventListener('mousedown', startPress);
+            element.addEventListener('mouseup', endPress);
+            element.addEventListener('mouseleave', cancelPress);
+
+            // Touch events
+            element.addEventListener('touchstart', startPress);
+            element.addEventListener('touchend', endPress);
+            element.addEventListener('touchcancel', cancelPress);
+        }
+
+        async function openBookFromLibrary(fileName, filePath) {
+            if (!browserInfo.canOpenFiles) {
+                errorDiv.textContent = `📱 On mobile: Drag & drop "${fileName}" onto this library item to reopen it.`;
+                return;
+            }
+
+            try {
+                // First try to reopen stored file handle (Chrome/Edge only)
+                let file = await reopenStoredFile(fileName);
+
+                if (file) {
+                    // Successfully reopened with stored handle
+                    await loadEpubFile(file);
+                    closeLibrary();
+                    updateLastOpened(fileName);
+                    errorDiv.textContent = `✅ Reopened "${fileName}" instantly!`;
+                    return;
+                }
+
+                // Fallback to file picker
+                file = await openFileWithSmartPicker();
+
+                if (file) {
+                    // Check if selected file matches library item
+                    if (file.name === fileName) {
+                        await loadEpubFile(file);
+                        closeLibrary();
+                        updateLastOpened(fileName);
+                        errorDiv.textContent = `✅ Opened "${fileName}" successfully!`;
+                    } else {
+                        // Different file selected
+                        if (confirm(`You selected "${file.name}" but the library item is "${fileName}". Open the selected file instead?`)) {
+                            await loadEpubFile(file);
+                            closeLibrary();
+                        }
+                    }
+                } else {
+                    errorDiv.textContent = `📁 File selection cancelled. To open "${fileName}", navigate to: ${filePath}`;
+                }
+
+            } catch (error) {
+                console.error('Error opening book from library:', error);
+                errorDiv.textContent = `❌ Error opening "${fileName}". Try navigating to: ${filePath}`;
+            }
+        }
+
+        function showLibrary() {
+            updateBrowserSupportInfo();
+            renderLibrary();
+            libraryModal.style.display = 'flex';
+            console.log('Library modal opened.');
+        }
+
+        function closeLibrary() {
+            libraryModal.style.display = 'none';
+            console.log('Library modal closed.');
+        }
+
+        // Font mapping
+        const fontMappings = {
+            serif: '"Songti SC", "SimSun", "Noto Serif CJK SC", "Source Han Serif SC", "STSong", serif',
+            'times': '"Songti SC", "SimSun", "Noto Serif CJK SC", "Source Han Serif SC", "STSong", serif',
+            'georgia': '"Songti SC", "SimSun", "Noto Serif CJK SC", "Source Han Serif SC", "STSong", serif',
+            'palatino': '"Songti SC", "SimSun", "Noto Serif CJK SC", "Source Han Serif SC", "STSong", serif',
+            'sans-serif': '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", "Arial", sans-serif',
+            'arial': '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", "Arial", sans-serif',
+            'helvetica': '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", "Arial", sans-serif',
+            'verdana': '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Helvetica Neue", "Arial", sans-serif',
+            monospace: '"SF Mono", "Monaco", "Inconsolata", "Fira Code", "Source Code Pro", "Noto Sans Mono CJK SC", monospace',
+            'courier': '"SF Mono", "Monaco", "Inconsolata", "Fira Code", "Source Code Pro", "Noto Sans Mono CJK SC", monospace'
+        };
+
+        function applyChineseFontMapping(iframe) {
+            if (!iframe || !iframe.contentDocument) return;
+
+            const doc = iframe.contentDocument;
+            const head = doc.head || doc.getElementsByTagName('head')[0];
+
+            // Remove existing Chinese font styles
+            const existingStyle = doc.getElementById('chinese-font-mapping');
+            if (existingStyle) {
+                existingStyle.remove();
+            }
+
+            if (!chineseFontsEnabled) return;
+
+            // Create comprehensive CSS for Chinese font mapping
+            const style = doc.createElement('style');
+            style.id = 'chinese-font-mapping';
+            style.textContent = `
+                /* Force desktop-style Chinese rendering */
+                * {
+                    -webkit-text-size-adjust: 100% !important;
+                    text-size-adjust: 100% !important;
+                }
+
+                /* Default Chinese sans-serif for body text */
+                body, p, div, span, li, td, th {
+                    font-family: ${fontMappings['sans-serif']} !important;
+                }
+
+                /* Chinese serif for headings and emphasis */
+                h1, h2, h3, h4, h5, h6, em, strong, b, i {
+                    font-family: ${fontMappings.serif} !important;
+                }
+
+                /* Chinese monospace for code */
+                code, pre, tt, kbd, samp {
+                    font-family: ${fontMappings.monospace} !important;
+                }
+
+                /* Override any existing font families with Chinese equivalents */
+                [style*="font-family"] {
+                    font-family: ${fontMappings['sans-serif']} !important;
+                }
+
+                [style*="serif"], .serif {
+                    font-family: ${fontMappings.serif} !important;
+                }
+
+                [style*="sans-serif"], .sans-serif {
+                    font-family: ${fontMappings['sans-serif']} !important;
+                }
+
+                [style*="monospace"], .monospace {
+                    font-family: ${fontMappings.monospace} !important;
+                }
+
+                /* Specific font name overrides */
+                [style*="Times"], [style*="Georgia"], [style*="Palatino"] {
+                    font-family: ${fontMappings.serif} !important;
+                }
+
+                [style*="Arial"], [style*="Helvetica"], [style*="Verdana"] {
+                    font-family: ${fontMappings['sans-serif']} !important;
+                }
+
+                [style*="Courier"], [style*="Monaco"], [style*="Consolas"] {
+                    font-family: ${fontMappings.monospace} !important;
+                }
+
+                /* Preserve font weights and styles */
+                [style*="font-weight: bold"], strong, b {
+                    font-weight: bold !important;
+                }
+
+                [style*="font-style: italic"], em, i {
+                    font-style: italic !important;
+                }
+
+                /* Maintain relative font sizes */
+                h1 { font-size: 2em !important; }
+                h2 { font-size: 1.5em !important; }
+                h3 { font-size: 1.17em !important; }
+                h4 { font-size: 1em !important; }
+                h5 { font-size: 0.83em !important; }
+                h6 { font-size: 0.67em !important; }
+            `;
+
+            head.appendChild(style);
+            console.log('Chinese font mapping applied to content');
+        }
+
+        function toggleChineseFonts() {
+            chineseFontsEnabled = !chineseFontsEnabled;
+            const btn = document.getElementById('toggleChineseFontsBtn');
+            btn.textContent = chineseFontsEnabled ? 'Disable Chinese Fonts' : 'Enable Chinese Fonts';
+
+            // Apply to current content
+            const iframe = document.querySelector('#reader iframe');
+            if (iframe) {
+                applyChineseFontMapping(iframe);
+            }
+
+            errorDiv.textContent = chineseFontsEnabled ?
+                'Chinese fonts enabled - content will use desktop Chrome Chinese font mapping' :
+                'Chinese fonts disabled - using default fonts';
+        }
+
+        // Override print-derived image CSS that breaks our continuous-scroll
+        // chunk model. Many EPUBs size images to a fixed fraction of the page
+        // for paginated e-readers (e.g. .img90b img { height: 90vh }) — in our
+        // scroll view that reserves a full viewport per image, leaving huge
+        // empty gaps between them. We constrain images to a sane MAX height
+        // (via a CSS variable, set per-chunk by setImageChunkHeight) and natural
+        // width, and neutralize forced page breaks. Crucially we set max-height
+        // only, NEVER a forced height — a forced height + width can collapse an
+        // <img> to 0x0 when its wrapper also constrains size.
+        function applyImageLayoutOverride(iframe) {
+            if (!iframe || !iframe.contentDocument) return;
+            const doc = iframe.contentDocument;
+            const head = doc.head || doc.getElementsByTagName('head')[0];
+            if (!head) return;
+            const existing = doc.getElementById('epub-image-layout-override');
+            if (existing) existing.remove();
+            const style = doc.createElement('style');
+            style.id = 'epub-image-layout-override';
+            style.textContent = `
+                img, svg, video, canvas {
+                    max-height: var(--epub-img-max-height, 45vh) !important;
+                    max-width: 100% !important;
+                    width: auto !important;
+                    height: auto !important;
+                    object-fit: contain !important;
+                    page-break-before: auto !important;
+                    break-before: auto !important;
+                    page-break-after: auto !important;
+                    break-after: auto !important;
+                }
+                figure, .img90, .img90b, .img90ba, .imgcb, .imglb, .imgc {
+                    height: auto !important;
+                    min-height: 0 !important;
+                    page-break-before: auto !important;
+                    break-before: auto !important;
+                    page-break-after: auto !important;
+                    break-after: auto !important;
+                    margin-top: 0.5em !important;
+                    margin-bottom: 0.5em !important;
+                }
+            `;
+            head.appendChild(style);
+        }
+
+        // Adapt the per-image max-height to how many images are visible in the
+        // current chunk, so a lone image fills the screen while a chunk with
+        // several images keeps them compact. Sets --epub-img-max-height on the
+        // document element. Only ever sets max-height (never forced height), so
+        // an image can't collapse to 0x0.
+        function setImageChunkHeight(doc, visibleMedia) {
+            if (!doc || !doc.documentElement) return;
+            let h;
+            if (visibleMedia <= 1)      h = 85;   // lone image — fill most of the screen
+            else if (visibleMedia === 2) h = 55;
+            else if (visibleMedia === 3) h = 38;
+            else                         h = 28;   // 4+ images — compact grid-ish
+            doc.documentElement.style.setProperty('--epub-img-max-height', h + 'vh');
+        }
+
+        function setupContentObserver(iframe) {
+            if (!iframe || !iframe.contentDocument) return;
+
+            // Only react to structural changes (new content loaded by epub.js),
+            // NOT to attribute changes. Our chunk display logic toggles
+            // style.display / class on many blocks at once, so observing
+            // attributes would cause a storm of callbacks (and, when fonts are
+            // enabled, a re-apply loop). childList alone covers "new chapter
+            // rendered" which is all we need to re-apply the font mapping.
+            const observer = new MutationObserver((mutations) => {
+                const structural = mutations.some(m => m.addedNodes.length > 0 || m.removedNodes.length > 0);
+                if (structural) {
+                    if (chineseFontsEnabled) applyChineseFontMapping(iframe);
+                    applyImageLayoutOverride(iframe);   // re-assert after injected blocks
+                }
+            });
+
+            observer.observe(iframe.contentDocument.body, {
+                childList: true,
+                subtree: true
+            });
+        }
+
+        // Reader functions
+        function resetReader() {
+            if (rendition) {
+                rendition.clear();
+                rendition = null;
+            }
+            if (book) {
+                book.destroy();
+                book = null;
+            }
+            currentFileName = null;
+            currentFilePath = null;
+            currentFileKey = null;
+            // Clear chunk-reader state so a fresh load starts clean.
+            chunkPlans = new Map();
+            currentChunkPlan = null;
+            currentSpineIndex = 0;
+            currentChunkIndex = 0;
+            displayedSpineIndex = -1;
+            prefetchToken++;
+            spineGroups = [];
+            groupIndexOfSpine = new Map();
+            pendingGroupRender = null;
+            scrollMemory = new Map();
+            lastChunkKey = null;
+            const statusEl = document.getElementById('chunkStatus');
+            if (statusEl) statusEl.textContent = '';
+            prevBtn.disabled = true;
+            nextBtn.disabled = true;
+            mobilePrevBtn.disabled = true;
+            mobileNextBtn.disabled = true;
+            tocBtn.disabled = true;
+            tocList.innerHTML = '';
+            reader.innerHTML = '<div class="translation-overlay" id="translationOverlay"><div class="translation-spinner"></div><div class="translation-status">Translating page content...</div></div>';
+            errorDiv.textContent = '';
+            console.log('Reader state reset.');
+        }
+
+        function savePosition(cfi, fileName) {
+            if (cfi && fileName) {
+                localStorage.setItem(`epub-position-${fileName}`, cfi);
+                console.log(`Saved position for ${fileName}: ${cfi}`);
+            }
+        }
+
+        function getSavedPosition(fileName) {
+            const cfi = localStorage.getItem(`epub-position-${fileName}`);
+            console.log(`Retrieved position for ${fileName}: ${cfi || 'none'}`);
+            return cfi;
+        }
+
+        function clearSavedPosition() {
+            if (currentFileName) {
+                localStorage.removeItem(`epub-position-${currentFileName}`);
+                console.log(`Cleared saved position for ${currentFileName}`);
+                errorDiv.textContent = 'Saved position cleared.';
+            } else {
+                errorDiv.textContent = 'No book loaded to clear position.';
+            }
+        }
+
+        // Load EPUB file
+        async function loadEpubFile(file) {
+            resetReader();
+            currentPageTranslated = false;
+            document.getElementById('toggleTranslationBtn').style.display = 'none';
+
+            try {
+                currentFileName = file.name;
+                currentFilePath = file.webkitRelativePath || file.name;
+                currentFileKey = currentFileName;
+
+                // Reset chunk-reader state for the new book
+                chunkPlans = new Map();
+                currentChunkPlan = null;
+                currentSpineIndex = 0;
+                currentChunkIndex = 0;
+                displayedSpineIndex = -1;
+                prefetchToken++;
+                spineGroups = [];
+                groupIndexOfSpine = new Map();
+                pendingGroupRender = null;
+                pendingChunkOnDisplay = 0;
+                scrollMemory = new Map();
+                lastChunkKey = null;
+
+                diag.info('=== loadEpubFile: opening', file.name, '(' + file.size + ' bytes) ===');
+
+                book = ePub(file);
+                diag.info('loadEpubFile: ePub instance created');
+
+                // Wait for the reader container to be properly sized
+                await new Promise(resolve => setTimeout(resolve, 200));
+
+                const readerRect = reader.getBoundingClientRect();
+                diag.info('loadEpubFile: reader container', Math.floor(readerRect.width) + 'x' + Math.floor(readerRect.height));
+
+                // flow:'scrolled' renders each spine as one continuous vertical
+                // scroll (no CSS columns). We then carve it into stable chunks
+                // via block show/hide, independent of viewport size.
+                rendition = book.renderTo('reader', {
+                    width: Math.floor(readerRect.width),
+                    height: Math.floor(readerRect.height),
+                    flow: 'scrolled',
+                    spread: 'none',
+                    allowScriptedContent: true,
+                    manager: 'default'
+                });
+
+                diag.info('loadEpubFile: rendition created (flow=scrolled)');
+
+                // Resolve the saved chunk position (spineIndex:chunkIndex) if any.
+                let startSpine = 0, startChunk = 0;
+                const saved = getSavedPosition(currentFileName);
+                if (saved && typeof saved === 'string' && saved.includes(':')) {
+                    const [s, c] = saved.split(':').map(Number);
+                    if (!isNaN(s) && !isNaN(c)) { startSpine = s; startChunk = c; }
+                }
+                pendingChunkOnDisplay = startChunk;   // seed for the initial render
+
+                // Track whether 'displayed' fires at all (if not, that's the bug).
+                let displayedFired = false;
+
+                // When a spine finishes rendering, either finalize a pending
+                // GROUP render (inject sibling spines + build plan + show chunk)
+                // or, for a lone render, set up chunks directly.
+                rendition.on('displayed', () => {
+                    displayedFired = true;
+                    const iframe = document.querySelector('#reader iframe');
+                    if (!iframe) { diag.error("displayed: NO iframe found in #reader"); return; }
+
+                    // Determine which spine epub.js just rendered.
+                    let spineIndex = startSpine;
+                    try {
+                        const loc = rendition.currentLocation();
+                        if (loc && loc.start && typeof loc.start.index === 'number') spineIndex = loc.start.index;
+                        else if (loc && loc.start && loc.start.href && book.spine) {
+                            const sec = book.spine.get(loc.start.href);
+                            if (sec) spineIndex = sec.index;
+                        }
+                    } catch (e) { diag.warn('displayed: could not read currentLocation', e.message); }
+
+                    diag.info('displayed: spine=' + spineIndex, 'iframe.contentDocument=' + !!(iframe.contentDocument),
+                        'bodyTextLen=' + (iframe.contentDocument && iframe.contentDocument.body ? iframe.contentDocument.body.textContent.trim().length : 'no-body'));
+
+                    // Group render in flight: hand off to the finalizer (async).
+                    if (pendingGroupRender) {
+                        const { groupIndex, chunkIndex } = pendingGroupRender;
+                        pendingGroupRender = null;
+                        finalizeGroupRender(groupIndex, chunkIndex);
+                        return;
+                    }
+
+                    // Lone render (no pending group): do the classic single-spine setup.
+                    displayedSpineIndex = spineIndex;
+                    currentSpineIndex = spineIndex;
+                    currentChunkPlan = buildChunkPlan(iframe.contentDocument);
+                    chunkPlans.set(spineIndex, currentChunkPlan);
+
+                    applyChineseFontMapping(iframe);
+                    applyImageLayoutOverride(iframe);
+                    setupContentObserver(iframe);
+
+                    const targetChunk = pendingChunkOnDisplay;
+                    pendingChunkOnDisplay = 0;
+                    showChunk(targetChunk);
+                    savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
+                });
+
+                diag.info('loadEpubFile: awaiting book.ready...');
+                await book.ready;
+                diag.info('loadEpubFile: book.ready. spineItems=' + (book.spine ? book.spine.spineItems.length : 'NO SPINE'));
+
+                // Compute spine groups (merges tiny consecutive chapters).
+                await computeSpineGroups();
+
+                // Get book title from metadata
+                const metadata = book.packaging.metadata;
+                const bookTitle = metadata.title || currentFileName.replace(/\.[^/.]+$/, "");
+
+                // Add to library
+                addToLibrary(currentFileName, currentFilePath, bookTitle);
+
+                // Normalize saved spine to its GROUP's first spine, then render
+                // that group. (Old positions may point at a non-first spine.)
+                let startGroup = 0;
+                if (groupIndexOfSpine.has(startSpine)) {
+                    startGroup = groupIndexOfSpine.get(startSpine);
+                    startSpine = spineGroups[startGroup].firstSpine;
+                }
+                if (startGroup >= spineGroups.length) startGroup = 0;
+
+                diag.info('loadEpubFile: rendering group ' + startGroup + ' (firstSpine=' + startSpine + ', members=' + spineGroups[startGroup].spines.length + ')');
+                await renderGroup(startGroup, startChunk);
+
+                // Wait for content to load
+                await new Promise(resolve => setTimeout(resolve, 400));
+
+                // If 'displayed' never fired, epub.js didn't render — diagnose why.
+                if (!displayedFired) {
+                    const iframe = document.querySelector('#reader iframe');
+                    diag.error('loadEpubFile: "displayed" event NEVER fired after 400ms. iframe=' + !!iframe,
+                        iframe ? ('contentDoc=' + !!iframe.contentDocument) : '');
+                    errorDiv.textContent = 'Reader failed to render (displayed event did not fire). Open Diag for details.';
+                }
+
+                prevBtn.disabled = false;
+                nextBtn.disabled = false;
+                mobilePrevBtn.disabled = false;
+                mobileNextBtn.disabled = false;
+                tocBtn.disabled = false;
+                errorDiv.textContent = '';
+                updateButtonStates();
+                loadTableOfContents();
+
+                diag.info('loadEpubFile: COMPLETE — group=' + startGroup, 'chunk=' + currentChunkIndex);
+            } catch (error) {
+                const errorMsg = `Failed to load EPUB: ${error.message || error}`;
+                errorDiv.textContent = errorMsg;
+                diag.error('loadEpubFile: FAILED', error.message, error.stack);
+            }
+        }
+
+        function checkForCachedTranslation(iframe) {
+            // Obsolete: cached translations are now auto-applied per chunk inside
+            // showChunk(). Kept as a no-op for any legacy callers.
+        }
+
+        // --- Group rendering ---
+        // One-shot state coordinating the 'displayed' handler with group assembly.
+        // When a group render is in flight, 'displayed' (fired by the first member's
+        // rendition.display) hands off to finalizeGroupRender instead of doing its
+        // own chunk setup.
+        let pendingGroupRender = null;   // { groupIndex, chunkIndex } or null
+        let pendingChunkOnDisplay = 0;   // legacy one-shot chunk (initial load)
+
+        // Inject the remaining members of a group into the first member's iframe.
+        // We adopt each subsequent section's chunk-root block children into the
+        // live body so all the group's blocks sit in one document — then the
+        // standard buildChunkPlan/showChunk machinery sees one flat sibling list.
+        // Wrapped in try/catch: on failure we simply render fewer members (graceful
+        // fallback to today's behavior), never crash.
+        async function injectGroupBlocks(group) {
+            if (!group || group.spines.length <= 1) return 0;
+            const iframe = document.querySelector('#reader iframe');
+            const hostDoc = iframe && iframe.contentDocument;
+            if (!hostDoc || !hostDoc.body) return 0;
+            let injected = 0;
+            for (let k = 1; k < group.spines.length; k++) {
+                const section = book.spine.get(group.spines[k]);
+                if (!section) continue;
+                try {
+                    const docEl = await section.load(book.load.bind(book));
+                    const doc = docEl.ownerDocument || (docEl.documentElement ? docEl.documentElement.ownerDocument : null);
+                    const srcBody = doc ? (doc.body || doc.querySelector('body')) : null;
+                    if (!srcBody) { section.unload(); continue; }
+                    const blocks = getLeafBlocks(srcBody);
+                    for (const b of blocks) {
+                        const adopted = hostDoc.adoptNode(b, true);
+                        hostDoc.body.appendChild(adopted);
+                        injected++;
+                    }
+                    section.unload();
+                } catch (e) {
+                    diag.warn('injectGroupBlocks: failed to inject spine ' + group.spines[k] + ': ' + e.message);
+                }
+            }
+            if (injected > 0) diag.info('injectGroupBlocks: appended ' + injected + ' blocks from ' + (group.spines.length - 1) + ' sibling spine(s)');
+            return injected;
+        }
+
+        // Called after the first member of a group has rendered (via 'displayed').
+        // Injects the rest, builds the plan, shows the requested chunk.
+        async function finalizeGroupRender(groupIndex, chunkIndex) {
+            const group = spineGroups[groupIndex];
+            if (!group) { diag.warn('finalizeGroupRender: no group ' + groupIndex); return; }
+            const iframe = document.querySelector('#reader iframe');
+            if (!iframe || !iframe.contentDocument) { diag.warn('finalizeGroupRender: no iframe doc'); return; }
+
+            await injectGroupBlocks(group);
+
+            displayedSpineIndex = group.firstSpine;
+            currentSpineIndex = group.firstSpine;
+            currentChunkPlan = buildChunkPlan(iframe.contentDocument);
+            chunkPlans.set(group.firstSpine, currentChunkPlan);
+
+            applyChineseFontMapping(iframe);
+            applyImageLayoutOverride(iframe);
+            setupContentObserver(iframe);
+
+            showChunk(chunkIndex);
+            savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
+            updateButtonStates();
+            diag.info('finalizeGroupRender: group ' + groupIndex + ' (spines ' + group.spines.join(',') + ') chunk=' + chunkIndex + '/' + currentChunkPlan.chunks.length);
+        }
+
+        // Render a specific group into the iframe, then show its chunk.
+        async function renderGroup(groupIndex, chunkIndex) {
+            if (!spineGroups[groupIndex]) { diag.warn('renderGroup: no group ' + groupIndex); return; }
+            const group = spineGroups[groupIndex];
+            diag.info('renderGroup: group=' + groupIndex, 'spines=' + group.spines.join(','), 'chunk=' + chunkIndex, 'alreadyDisplayed=' + (displayedSpineIndex === group.firstSpine));
+            // If this group is already displayed, just switch chunks in-place.
+            if (displayedSpineIndex === group.firstSpine) {
+                currentChunkIndex = chunkIndex;
+                showChunk(chunkIndex);
+                savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
+                updateButtonStates();
+                return;
+            }
+            // Render the first member; 'displayed' will hand off to finalizeGroupRender.
+            const firstSection = book.spine.get(group.firstSpine);
+            if (!firstSection) { diag.error('renderGroup: no section for first spine ' + group.firstSpine); return; }
+            pendingGroupRender = { groupIndex, chunkIndex };
+            await rendition.display(firstSection.href);
+            // Give 'displayed' a moment; if it didn't run the finalizer (e.g. event
+            // already fired before we set pendingGroupRender), run it now.
+            await new Promise(r => setTimeout(r, 150));
+            if (pendingGroupRender && pendingGroupRender.groupIndex === groupIndex) {
+                diag.warn('renderGroup: displayed handler did not consume pendingGroupRender; finalizing manually');
+                pendingGroupRender = null;
+                await finalizeGroupRender(groupIndex, chunkIndex);
+            }
+        }
+
+        // The group currently displayed, derived from currentSpineIndex (which is
+        // always the group's first spine once rendered).
+        function currentGroupIndex() {
+            return groupIndexOfSpine.has(currentSpineIndex) ? groupIndexOfSpine.get(currentSpineIndex) : 0;
+        }
+
+        // Navigation functions (group-based)
+        async function prevPage() {
+            if (!rendition || !book) return;
+            prefetchToken++;   // cancel any in-flight prefetch
+            captureCurrentScroll();   // remember where we were before leaving
+            document.getElementById('toggleTranslationBtn').style.display = 'none';
+
+            try {
+                if (currentChunkIndex > 0) {
+                    // Previous chunk within the current group.
+                    showChunk(currentChunkIndex - 1);
+                } else {
+                    // Cross to the PREVIOUS group's last chunk.
+                    const gi = currentGroupIndex();
+                    if (gi <= 0) { updateButtonStates(); return; }
+                    const prevGroup = spineGroups[gi - 1];
+                    // Ensure we have a plan to know its last chunk; if not cached,
+                    // fall back to last chunk index = 0-safe via renderGroup.
+                    let lastChunk = 0;
+                    const plan = chunkPlans.get(prevGroup.firstSpine);
+                    if (plan) lastChunk = plan.chunks.length - 1;
+                    await renderGroup(gi - 1, lastChunk);
+                    // If the plan wasn't cached, renderGroup showed chunk 0; jump
+                    // to the actual last chunk now that the plan is built.
+                    const fresh = chunkPlans.get(prevGroup.firstSpine);
+                    if (fresh && displayedSpineIndex === prevGroup.firstSpine) {
+                        showChunk(fresh.chunks.length - 1);
+                    }
+                }
+                savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
+                updateButtonStates();
+                const iframe = document.querySelector('#reader iframe');
+                if (iframe && chineseFontsEnabled) applyChineseFontMapping(iframe);
+                schedulePrefetch();
+            } catch (error) {
+                diag.error('prevPage: FAILED', error.message, error.stack);
+                errorDiv.textContent = `Navigation error: ${error.message}`;
+            }
+        }
+
+        async function nextPage() {
+            if (!rendition || !book) return;
+            prefetchToken++;   // cancel any in-flight prefetch
+            captureCurrentScroll();   // remember where we were before leaving
+            document.getElementById('toggleTranslationBtn').style.display = 'none';
+
+            try {
+                const plan = currentChunkPlan || chunkPlans.get(currentSpineIndex);
+                if (plan && currentChunkIndex < plan.chunks.length - 1) {
+                    // Next chunk within the current group.
+                    showChunk(currentChunkIndex + 1);
+                } else {
+                    // Cross to the NEXT group's first chunk.
+                    const gi = currentGroupIndex();
+                    if (gi >= spineGroups.length - 1) { updateButtonStates(); return; }
+                    await renderGroup(gi + 1, 0);
+                }
+                savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
+                updateButtonStates();
+                const iframe = document.querySelector('#reader iframe');
+                if (iframe && chineseFontsEnabled) applyChineseFontMapping(iframe);
+                schedulePrefetch();
+            } catch (error) {
+                diag.error('nextPage: FAILED', error.message, error.stack);
+                errorDiv.textContent = `Navigation error: ${error.message}`;
+            }
+        }
+
+        // Kick off prefetch of the next 2 chunks (current model: silent IDB writes).
+        function schedulePrefetch() {
+            if (!translationSettings.apiKey || !translationSettings.cacheTranslations) return;
+            const token = ++prefetchToken;
+            prefetchAhead(currentSpineIndex, currentChunkIndex, 2, token);
+        }
+
+        function updateButtonStates() {
+            if (!rendition || !book || !book.spine) return;
+            try {
+                const gi = currentGroupIndex();
+                const plan = currentChunkPlan || chunkPlans.get(currentSpineIndex);
+                const atFirstChunk = currentChunkIndex === 0;
+                const atLastChunk = plan ? currentChunkIndex >= plan.chunks.length - 1 : true;
+                const hasPrevGroup = gi > 0;
+                const hasNextGroup = gi < spineGroups.length - 1;
+
+                prevBtn.disabled = atFirstChunk && !hasPrevGroup;
+                nextBtn.disabled = atLastChunk && !hasNextGroup;
+                mobilePrevBtn.disabled = prevBtn.disabled;
+                mobileNextBtn.disabled = nextBtn.disabled;
+            } catch (error) {
+                diag.error('updateButtonStates: ' + error.message);
+            }
+        }
+
+        // Table of Contents
+        function loadTableOfContents() {
+            if (!book || !book.navigation) {
+                console.error('No book or navigation data available.');
+                errorDiv.textContent = 'No table of contents available.';
+                tocList.innerHTML = '<li>No table of contents available.</li>';
+                return;
+            }
+
+            console.log('Loading table of contents...');
+            tocList.innerHTML = '';
+            book.navigation.toc.forEach(item => {
+                const li = document.createElement('li');
+                const link = document.createElement('a');
+                link.textContent = item.label || 'Untitled';
+                link.href = '#';
+                link.onclick = async (e) => {
+                    e.preventDefault();
+                    console.log(`Navigating to ToC item: ${item.label} (${item.href})`);
+                    prefetchToken++;
+                    captureCurrentScroll();   // remember current position before jumping
+                    document.getElementById('toggleTranslationBtn').style.display = 'none';
+
+                    try {
+                        // Resolve the ToC href to a spine index, then to its group,
+                        // then render that group's first chunk.
+                        const section = book.spine.get(item.href);
+                        if (!section) {
+                            errorDiv.textContent = `Could not locate "${item.label}" in the book spine.`;
+                            return;
+                        }
+                        const gi = groupIndexOfSpine.has(section.index) ? groupIndexOfSpine.get(section.index) : 0;
+                        await renderGroup(gi, 0);
+                        closeTableOfContents();
+                        savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
+                        updateButtonStates();
+                        const iframe = document.querySelector('#reader iframe');
+                        if (iframe && chineseFontsEnabled) applyChineseFontMapping(iframe);
+                        schedulePrefetch();
+                    } catch (error) {
+                        diag.error('ToC navigation: ' + error.message);
+                        errorDiv.textContent = `ToC navigation error: ${error.message}`;
+                    }
+                };
+                li.appendChild(link);
+                tocList.appendChild(li);
+            });
+            console.log('Table of contents loaded.');
+        }
+
+        function showTableOfContents() {
+            if (!book) {
+                errorDiv.textContent = 'No book loaded.';
+                console.error('No book loaded for ToC.');
+                return;
+            }
+            tocModal.style.display = 'flex';
+            console.log('ToC modal opened.');
+        }
+
+        function closeTableOfContents() {
+            tocModal.style.display = 'none';
+            console.log('ToC modal closed.');
+        }
+
+        // Event listeners
+        input.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                errorDiv.textContent = 'No file selected.';
+                console.error('No file selected.');
+                return;
+            }
+
+            await loadEpubFile(file);
+        });
+
+        // PWA file handling
+        if (hasFileHandling && 'launchQueue' in window) {
+            window.launchQueue.setConsumer(async (launchParams) => {
+                if (launchParams.files && launchParams.files.length > 0) {
+                    const fileHandle = launchParams.files[0];
+                    const file = await fileHandle.getFile();
+                    if (file.name.toLowerCase().endsWith('.epub')) {
+                        await loadEpubFile(file);
+                        storedFileHandles.set(file.name, fileHandle);
+                        console.log('Opened EPUB from file association:', file.name);
+                    }
+                }
+            });
+        }
+
+        // Close modals when clicking outside
+        libraryModal.addEventListener('click', (e) => {
+            if (e.target === libraryModal) {
+                closeLibrary();
+            }
+        });
+
+        tocModal.addEventListener('click', (e) => {
+            if (e.target === tocModal) {
+                closeTableOfContents();
+            }
+        });
+
+        translationSettingsModal.addEventListener('click', (e) => {
+            if (e.target === translationSettingsModal) {
+                closeTranslationSettings();
+            }
+        });
+
+        // Initialize
+        setupDragAndDrop();
+        updateBrowserSupportInfo();
+
+        // Monitor DOM changes
+        const observer = new MutationObserver((mutations) => {
+            console.log('DOM changed, new content loaded.');
+            // Reapply Chinese fonts if enabled and iframe is available
+            setTimeout(() => {
+                const iframe = document.querySelector('#reader iframe');
+                if (iframe && chineseFontsEnabled) {
+                    applyChineseFontMapping(iframe);
+                }
+            }, 100);
+        });
+
+        observer.observe(reader, {
+            childList: true,
+            subtree: true
+        });
+
+        // Register the service worker so the app shell (HTML + vendored libs)
+        // is cached and the reader works fully offline. No-op where unsupported.
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js').catch(e => {
+                    console.warn('Service worker registration failed:', e.message);
+                });
+            });
+        }
+
+        // ---- PWA install prompt ----
+        // Chrome fires 'beforeinstallprompt' when it considers the app
+        // installable (valid manifest + active service worker + engagement on
+        // non-localhost origins). We capture it, surface an in-page "Install
+        // App" button, and trigger the native prompt on click. This makes
+        // install discoverable on Android LAN IPs where the address-bar icon
+        // is shy.
+        let deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();                 // suppress the automatic mini-infobar
+            deferredInstallPrompt = e;
+            const btn = document.getElementById('installBtn');
+            if (btn) btn.style.display = 'inline-block';
+            console.log('Install prompt available — install button shown.');
+        });
+
+        async function promptInstall() {
+            const btn = document.getElementById('installBtn');
+            if (!deferredInstallPrompt) {
+                // Browser didn't fire beforeinstallprompt (e.g. already installed,
+                // or iOS Safari which uses Share → Add to Home Screen).
+                const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+                if (isIOS) {
+                    alert('To install on iOS: tap the Share button, then "Add to Home Screen".');
+                } else {
+                    alert('Install isn\'t available right now. Use your browser menu → "Install app" / "Add to Home screen".');
+                }
+                return;
+            }
+            deferredInstallPrompt.prompt();
+            const choice = await deferredInstallPrompt.userChoice;
+            if (choice && choice.outcome === 'accepted') {
+                console.log('User accepted the install prompt.');
+            } else {
+                console.log('User dismissed the install prompt.');
+            }
+            deferredInstallPrompt = null;
+            if (btn) btn.style.display = 'none';   // prompt can only be shown once per event
+        }
+
+        // Hide the button once installed.
+        window.addEventListener('appinstalled', () => {
+            const btn = document.getElementById('installBtn');
+            if (btn) btn.style.display = 'none';
+            console.log('App installed.');
+        });
+    </script>
+</body>
+</html>
