@@ -1087,6 +1087,7 @@
             document.body.classList.remove('chrome-hidden');   // reserve bar space
             chromeHidden = false;
             scheduleAutoHide();
+            resizeRendition();   // stage shrank (bars reserve space) — sync iframe
         }
         function hideChrome() {
             // Never hide chrome while a modal/panel is open — the user is
@@ -1099,6 +1100,7 @@
             document.body.classList.add('chrome-hidden');      // reader goes fullscreen
             chromeHidden = true;
             if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
+            resizeRendition();   // stage grew (bars hidden) — sync iframe
         }
         function toggleChrome() {
             chromeHidden ? showChrome() : hideChrome();
@@ -1106,6 +1108,24 @@
         function scheduleAutoHide() {
             if (autoHideTimer) clearTimeout(autoHideTimer);
             autoHideTimer = setTimeout(() => { if (!chromeHidden) hideChrome(); }, AUTO_HIDE_MS);
+        }
+
+        // Resize the epub.js rendition to match the current reader-stage size.
+        // Critical: the stage height changes when chrome hides/shows and when the
+        // mobile address bar slides. Without this, the iframe keeps its original
+        // (shorter) height and clips the bottom of long chunks. Debounced so we
+        // don't thrash epub.js during a drag-resize.
+        let resizeTimer = null;
+        function resizeRendition() {
+            if (!rendition || !reader) return;
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                const r = reader.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    rendition.resize(Math.floor(r.width), Math.floor(r.height));
+                    diag.info('resizeRendition: ' + Math.floor(r.width) + 'x' + Math.floor(r.height));
+                }
+            }, 150);
         }
 
         // Navigation availability (replaces the old prevBtn/nextBtn disabled logic).
@@ -3624,6 +3644,12 @@
         setupTapZones();          // immersive UI: tap-zone navigation + chrome auto-hide
         showChrome();             // chrome visible on first load (no book yet)
         showTapHint();            // brief hint, fades on its own
+        // Track viewport size changes (mobile address bar slide, orientation,
+        // keyboard) and keep the epub.js iframe in sync with the reader stage.
+        window.addEventListener('resize', resizeRendition);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', resizeRendition);
+        }
 
         // Monitor DOM changes
         const observer = new MutationObserver((mutations) => {
