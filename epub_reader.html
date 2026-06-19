@@ -13,36 +13,162 @@
     <script src="./lib/jszip.min.js"></script>
     <script src="./lib/epub.min.js"></script>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 20px;
-            margin: 0;
+        /* ---- Immersive reader layout (warm paper) ----
+           The book IS the app: edge-to-edge fullscreen, chrome that hides,
+           tap-zone navigation. Cream paper background, charcoal blurred chrome,
+           amber progress accent. */
+        :root {
+            --paper: #f8f5ef;
+            --chrome-bg: rgba(44, 47, 52, 0.92);
+            --chrome-fg: #eef0f2;
+            --chrome-accent: #c8702c;        /* amber */
+            --chrome-muted: #9aa0a6;
+            --progress: 0%;
+            /* Chrome bar heights — the reader reserves this space when the bars
+               are visible so content isn't hidden underneath them. When chrome
+               hides, these collapse to 0 and the reader fills the full screen. */
+            --chrome-top-h: 0px;
+            --chrome-bottom-h: 0px;
         }
-        #reader-container {
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            justify-content: center;
-            width: 80%;
-            max-width: 1000px;
-            gap: 10px;
+        /* When chrome is visible (no .chrome-hidden on body), reserve bar space. */
+        body:not(.chrome-hidden) {
+            --chrome-top-h: 44px;
+            --chrome-bottom-h: 36px;
+        }
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;                /* the reader manages its own scroll */
+            background: var(--paper);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        }
+        #reader-stage {
+            position: fixed;
+            /* Sit BETWEEN the chrome bars so no content hides under them.
+               Uses 100dvh for mobile dynamic viewport; falls back to 100vh. */
+            top: var(--chrome-top-h);
+            bottom: var(--chrome-bottom-h);
+            left: 0;
+            right: 0;
+            height: calc(100vh - var(--chrome-top-h) - var(--chrome-bottom-h));
+            height: calc(100dvh - var(--chrome-top-h) - var(--chrome-bottom-h));
+            background: var(--paper);
+            transition: top 0.28s ease, bottom 0.28s ease, height 0.28s ease;
         }
         #reader {
+            position: absolute;
+            inset: 0;
             width: 100%;
-            height: 800px;
-            border: 2px solid #007bff;
+            height: 100%;
+            border: none;
+            background: var(--paper);
             overflow: hidden;
-            background: #fff;
-            flex: 1;
-            position: relative;
         }
         #reader iframe {
             width: 100% !important;
             height: 100% !important;
             border: none;
+        }
+
+        /* Thin amber progress slit at the very top — always visible, even when
+           chrome is hidden, so the reader always senses position. */
+        #progress-slit {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 2px;
+            width: var(--progress);
+            background: var(--chrome-accent);
+            z-index: 60;
+            transition: width 0.3s ease;
+            max-width: 100%;
+        }
+
+        /* Chrome bars (top + bottom): translucent charcoal, blurred, slide away. */
+        .chrome {
+            position: fixed;
+            left: 0;
+            right: 0;
+            background: var(--chrome-bg);
+            color: var(--chrome-fg);
+            -webkit-backdrop-filter: blur(12px);
+            backdrop-filter: blur(12px);
+            z-index: 50;
+            transition: transform 0.28s ease, opacity 0.28s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        .chrome::-webkit-scrollbar { display: none; }
+        .chrome button {
+            background: transparent;
+            color: var(--chrome-fg);
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 14px;
+            padding: 6px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .chrome button:hover { background: rgba(255,255,255,0.10); }
+        .chrome button:disabled { opacity: 0.4; cursor: default; }
+        #topbar { top: 0; justify-content: flex-start; }
+        #bottombar {
+            bottom: 0;
+            justify-content: center;
+            font-size: 12px;
+            color: var(--chrome-muted);
+            gap: 10px;
+        }
+        /* Hidden state: slide off-screen + non-interactive. */
+        .chrome.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        #topbar.hidden { transform: translateY(-100%); }
+        #bottombar.hidden { transform: translateY(100%); }
+
+        /* Tap zones: now pointer-events:none — the iframe owns all gestures
+           (scrolling, text selection). Tap detection happens via a script
+           injected INTO the iframe (injectTapDetector), which postMessages the
+           tap's x-ratio to the parent. The overlay divs remain only as visual
+           scaffolding / hint anchors. */
+        #tapzones {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            z-index: 40;
+            pointer-events: none;
+        }
+        .tz { flex: 1 1 0; pointer-events: none; }
+        /* First-load hint pulse in the center zone. */
+        #tap-hint {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: var(--chrome-muted);
+            font-size: 14px;
+            background: var(--chrome-bg);
+            padding: 14px 22px;
+            border-radius: 10px;
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            z-index: 45;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.4s;
+        }
+        #tap-hint.show { opacity: 0.92; animation: tap-pulse 2.2s ease-in-out; }
+        @keyframes tap-pulse {
+            0% { opacity: 0; transform: translate(-50%, -45%); }
+            25% { opacity: 0.92; transform: translate(-50%, -50%); }
+            75% { opacity: 0.92; }
+            100% { opacity: 0; transform: translate(-50%, -55%); }
         }
 
         /* Translation-specific styles */
@@ -740,33 +866,41 @@
         </div>
     </div>
 
-    <h1>EPUB Reader with AI Translation</h1>
-    <input type="file" id="epubInput" accept=".epub">
-    <div id="controls">
-        <button id="libraryBtn" onclick="showLibrary()">Library</button>
-        <button id="tocBtn" onclick="showTableOfContents()" disabled>Table of Contents</button>
-        <button id="translateSettingsBtn" onclick="showTranslationSettings()">Translation Settings</button>
-        <button id="translateBtn" onclick="translateCurrentChunk()">Translate This Chunk</button>
+    <input type="file" id="epubInput" accept=".epub" style="display:none;">
+
+    <!-- Top chrome: slides away while reading -->
+    <div id="topbar" class="chrome">
+        <button id="openBookBtn" onclick="openBookFile()">📖 Open Book</button>
+        <button id="libraryBtn" onclick="showLibrary()">📚 Library</button>
+        <button id="tocBtn" onclick="showTableOfContents()" disabled>☰ Contents</button>
+        <button id="translateBtn" onclick="translateCurrentChunk()">🌐 Translate</button>
         <button id="toggleTranslationBtn" onclick="toggleTranslatedContent()" style="display: none;">Show Original</button>
-        <button id="clearPositionBtn" onclick="clearSavedPosition()">Clear Saved Position</button>
-        <button id="toggleChineseFontsBtn" onclick="toggleChineseFonts()">Toggle Chinese Fonts</button>
+        <button id="translateSettingsBtn" onclick="showTranslationSettings()">⚙️ Translate Settings</button>
+        <button id="toggleChineseFontsBtn" onclick="toggleChineseFonts()">字 Fonts</button>
+        <button id="clearPositionBtn" onclick="clearSavedPosition()">↺ Reset</button>
         <button id="diagToggleBtn" onclick="toggleDiagPanel()">Diag</button>
-        <button id="installBtn" onclick="promptInstall()" style="display: none;">⬇ Install App</button>
+        <button id="installBtn" onclick="promptInstall()" style="display: none;">⬇ Install</button>
     </div>
-    <div id="chunkStatus" class="chunk-status"></div>
-    <div id="reader-container">
-        <button id="prevBtn" disabled onclick="prevPage()">Previous Page</button>
+
+    <!-- Fullscreen reading stage -->
+    <div id="reader-stage">
         <div id="reader">
             <div class="translation-overlay" id="translationOverlay">
                 <div class="translation-spinner"></div>
                 <div class="translation-status">Translating page content...</div>
             </div>
         </div>
-        <button id="nextBtn" disabled onclick="nextPage()">Next Page</button>
+        <div id="tapzones">
+            <div class="tz tz-left"></div>
+            <div class="tz tz-center"></div>
+            <div class="tz tz-right"></div>
+        </div>
+        <div id="tap-hint">tap center for menu · left/right to turn page</div>
     </div>
-    <div id="mobile-nav">
-        <button id="mobilePrevBtn" disabled onclick="prevPage()">Prev</button>
-        <button id="mobileNextBtn" disabled onclick="nextPage()">Next</button>
+
+    <!-- Bottom chrome: position + progress -->
+    <div id="bottombar" class="chrome">
+        <span id="chunkStatus">Open a book to begin</span>
     </div>
 
     <!-- Translation Settings Modal -->
@@ -936,6 +1070,108 @@
             if (!open) diag.render();   // refresh on open
         }
 
+        // ============================================================
+        // IMMERSIVE UI: chrome show/hide + tap-zone navigation
+        // The reading surface is fullscreen; the top/bottom chrome bars
+        // auto-hide. Three invisible tap zones over the reader: left = prev
+        // chunk, right = next chunk, center = toggle chrome. Tap zones only
+        // fire on quick taps (no movement) so drags pass through to the iframe
+        // for text selection and scrolling.
+        // ============================================================
+        let chromeHidden = false;
+        let autoHideTimer = null;
+        const AUTO_HIDE_MS = 2500;
+
+        function showChrome() {
+            document.querySelectorAll('.chrome').forEach(el => el.classList.remove('hidden'));
+            document.body.classList.remove('chrome-hidden');   // reserve bar space
+            chromeHidden = false;
+            scheduleAutoHide();
+        }
+        function hideChrome() {
+            // Never hide chrome while a modal/panel is open — the user is
+            // interacting with settings/library/etc.
+            if (document.querySelector('#translationSettingsModal[style*="block"], #tocModal[style*="block"], #libraryModal[style*="block"]')) return;
+            // Don't hide chrome when no book is loaded yet — the user needs to
+            // see the Open/Library buttons to get started.
+            if (!book || !rendition) return;
+            document.querySelectorAll('.chrome').forEach(el => el.classList.add('hidden'));
+            document.body.classList.add('chrome-hidden');      // reader goes fullscreen
+            chromeHidden = true;
+            if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
+        }
+        function toggleChrome() {
+            chromeHidden ? showChrome() : hideChrome();
+        }
+        function scheduleAutoHide() {
+            if (autoHideTimer) clearTimeout(autoHideTimer);
+            autoHideTimer = setTimeout(() => { if (!chromeHidden) hideChrome(); }, AUTO_HIDE_MS);
+        }
+
+        // Navigation availability (replaces the old prevBtn/nextBtn disabled logic).
+        function canGoPrev() {
+            if (!book || !book.spine) return false;
+            if (currentChunkIndex > 0) return true;
+            const gi = currentGroupIndex();
+            return gi > 0;
+        }
+        function canGoNext() {
+            if (!book || !book.spine) return false;
+            const plan = currentChunkPlan || chunkPlans.get(currentSpineIndex);
+            if (plan && currentChunkIndex < plan.chunks.length - 1) return true;
+            const gi = currentGroupIndex();
+            return gi < spineGroups.length - 1;
+        }
+
+        function handleTapZone(zone) {
+            if (zone === 'center') {
+                toggleChrome();
+                return;
+            }
+            // Navigation: only act if movement is possible; briefly show chrome
+            // for feedback at book ends.
+            if (zone === 'left') {
+                if (canGoPrev()) { prevPage(); scheduleAutoHide(); }
+                else { showChrome(); }
+            } else if (zone === 'right') {
+                if (canGoNext()) { nextPage(); scheduleAutoHide(); }
+                else { showChrome(); }
+            }
+        }
+
+        // Tap zones are detected from INSIDE the iframe (injectTapDetector) and
+        // reported via postMessage to the window listener above. This function
+        // is retained as an init hook but no longer wires overlay listeners
+        // (the overlay is pointer-events:none so the iframe receives gestures).
+        function setupTapZones() {
+            // Any pointer activity in the stage resets the auto-hide timer,
+            // so reading keeps chrome hidden but interacting brings it back.
+            const stage = document.getElementById('reader-stage');
+            if (stage) stage.addEventListener('pointermove', () => {
+                if (!chromeHidden) scheduleAutoHide();
+            });
+        }
+
+        // Show the first-load tap hint briefly, then fade it.
+        function showTapHint() {
+            const hint = document.getElementById('tap-hint');
+            if (!hint) return;
+            hint.classList.remove('show');
+            void hint.offsetWidth;   // restart animation
+            hint.classList.add('show');
+            setTimeout(() => hint.classList.remove('show'), 2300);
+        }
+
+        // Open the file picker for an .epub. Works everywhere (desktop + mobile):
+        // the hidden <input type="file"> fires the OS picker, and its change
+        // listener (registered at init) calls loadEpubFile.
+        function openBookFile() {
+            const inp = document.getElementById('epubInput');
+            if (!inp) { errorDiv.textContent = 'File input not found.'; return; }
+            inp.value = '';   // allow re-picking the same file
+            inp.click();
+        }
+
         // Check JSZip
         if (typeof JSZip === 'undefined') {
             console.error('JSZip library not loaded.');
@@ -1070,12 +1306,24 @@
         // <div class="sub_chap"> containers) uniformly — every <p> is a leaf
         // regardless of how deeply it's nested.
         const CHUNK_MEDIA_TAGS = new Set(['IMG','SVG','IMAGE','VIDEO','PICTURE','CANVAS']);
+        const CHUNK_LIST_TAGS = new Set(['OL','UL']);
         // Does `el` have a media element as a DIRECT child (not nested deeper)?
         // Used to recognize self-contained media figures (<figure><img/>…</figure>)
         // as leaves so they travel as one unit with their caption.
         function hasDirectMediaChild(el) {
             for (const c of el.children) {
                 if (CHUNK_MEDIA_TAGS.has(c.tagName)) return true;
+            }
+            return false;
+        }
+        // Does `el` have an <li> as a DIRECT child? Used to treat <ol>/<ul> as
+        // atomic leaf units so a list never splits across chunks — otherwise the
+        // browser renumbers visible <li>s from 1 in each chunk, producing the
+        // trailing "1. 2. 3." fragments.
+        function hasDirectListItemChild(el) {
+            if (!CHUNK_LIST_TAGS.has(el.tagName)) return false;
+            for (const c of el.children) {
+                if (c.tagName === 'LI') return true;
             }
             return false;
         }
@@ -1086,12 +1334,25 @@
             // A block is a LEAF if:
             //  (a) it has no other content-bearing block descendant, OR
             //  (b) it DIRECTLY contains media (e.g. <figure><img/><figcaption>…)
-            //      — a self-contained media unit whose caption travels with it.
-            // Case (b) is essential: otherwise <figure> is disqualified by its own
-            // <figcaption><p> and the <img> becomes an orphan that leaks.
+            //      — a self-contained media unit whose caption travels with it, OR
+            //  (c) it's an <ol>/<ul> with <li> children — an atomic list unit so
+            //      it never splits (which would renumber items per chunk).
+            // First pass: identify atomic units (media figures, list containers)
+            // that should be treated as single leaves — their descendants must
+            // NOT also be leaves, or they'd double-count and split the unit.
+            const atomicUnits = all.filter(el => hasDirectMediaChild(el) || hasDirectListItemChild(el));
+            // A quick lookup: is `el` inside any atomic unit?
+            const isInsideAtomicUnit = (el) => {
+                for (const unit of atomicUnits) {
+                    if (unit !== el && unit.contains(el)) return true;
+                }
+                return false;
+            };
             return all.filter(el => {
-                if (hasDirectMediaChild(el)) return true;        // (b) media unit
-                for (const other of all) {                       // (a) no content descendant
+                if (isInsideAtomicUnit(el)) return false;      // belongs to a unit, not a leaf itself
+                if (hasDirectMediaChild(el)) return true;       // (b) media unit
+                if (hasDirectListItemChild(el)) return true;    // (c) list unit
+                for (const other of all) {                      // (a) no content descendant
                     if (other !== el && el.contains(other)) return false;
                 }
                 return true;
@@ -1501,16 +1762,46 @@
         }
 
         let currentVisibleMedia = 0;   // visible top-level media in the current chunk (for status/debug)
+        let cachedGlobalChunkIndex = null;  // { idx, total } whole-book chunk position, lazily computed
+
+        // Compute the current chunk's position within the whole book (across all
+        // groups) and the total chunk count. Used for the progress slit + %.
+        function computeGlobalChunkPosition() {
+            if (!spineGroups || spineGroups.length === 0) return { idx: 0, total: 0 };
+            let idx = 0, total = 0;
+            const gi = currentGroupIndex();
+            for (let g = 0; g < spineGroups.length; g++) {
+                const plan = chunkPlans.get(spineGroups[g].firstSpine);
+                const cnt = plan ? plan.chunks.length : 1;
+                total += cnt;
+                if (g < gi) idx += cnt;
+            }
+            idx += currentChunkIndex;
+            return { idx, total };
+        }
+
+        function updateProgressAndStatus() {
+            const el = document.getElementById('chunkStatus');
+            const pos = computeGlobalChunkPosition();
+            const pct = pos.total > 0 ? Math.round((pos.idx / pos.total) * 100) : 0;
+            // Progress slit width via CSS var.
+            document.documentElement.style.setProperty('--progress', Math.max(2, pct) + '%');
+            if (el) {
+                const planCount = chunkCountFor(currentSpineIndex);
+                const totalSpine = book && book.spine ? book.spine.spineItems.length : 0;
+                const ch = currentSpineIndex + 1;
+                const gi = currentGroupIndex();
+                const imgInfo = currentVisibleMedia > 0 ? ' · ' + currentVisibleMedia + ' img' : '';
+                el.textContent = `Ch ${ch}/${totalSpine} · Group ${gi + 1}/${spineGroups.length} · § ${currentChunkIndex + 1}/${planCount}${imgInfo} · ${pct}%`;
+            }
+        }
 
         function updateChunkStatus(translated) {
-            const el = document.getElementById('chunkStatus');
-            if (!el) return;
-            const planCount = chunkCountFor(currentSpineIndex);
-            const totalSpine = book && book.spine ? book.spine.spineItems.length : 0;
-            const ch = currentSpineIndex + 1;
-            const mark = translated ? ' · Translated ✓' : '';
-            const imgInfo = currentVisibleMedia > 0 ? ' · ' + currentVisibleMedia + ' img' : '';
-            el.textContent = `Chapter ${ch}/${totalSpine} · Chunk ${currentChunkIndex + 1}/${planCount}${mark}${imgInfo}`;
+            updateProgressAndStatus();
+            if (translated) {
+                const el = document.getElementById('chunkStatus');
+                if (el) el.textContent += ' · Translated ✓';
+            }
         }
 
         // Ensure `currentChunkPlan` matches the currently rendered spine, then
@@ -1866,6 +2157,9 @@
         const translationOverlay = document.getElementById('translationOverlay');
         const translationSettingsModal = document.getElementById('translationSettingsModal');
         const debugInfo = document.getElementById('debugInfo');
+        // prevBtn/nextBtn/mobilePrevBtn/mobileNextBtn are declared above (legacy
+        // nav buttons removed in the immersive redesign; getElementById returns
+        // null, and all .disabled references are if-guarded).
 
         // Browser capability detection
         const hasFileSystemAccess = 'showOpenFilePicker' in window;
@@ -2706,6 +3000,54 @@
             head.appendChild(style);
         }
 
+        // Inject a tap detector INTO the epub.js iframe. Because the iframe is
+        // sandboxed, pointer events inside it never bubble to the parent — so a
+        // parent-level overlay cannot both detect taps AND let the iframe scroll
+        // / select text. The fix: a tiny script inside the iframe watches for
+        // quick taps (no movement) and postMessage's the tap's x-ratio to the
+        // parent. The parent maps left/center/right → prev/toggle/next. Native
+        // scrolling and text selection work because the iframe owns them; the
+        // injected script only REPORTS taps, never prevents default behavior.
+        function injectTapDetector(iframe) {
+            if (!iframe || !iframe.contentDocument || !iframe.contentWindow) return;
+            const doc = iframe.contentDocument;
+            if (doc.getElementById('epub-tap-detector')) return;   // already injected
+            const s = doc.createElement('script');
+            s.id = 'epub-tap-detector';
+            s.textContent = `
+                (function(){
+                    var start=null;
+                    document.addEventListener('pointerdown', function(e){
+                        start={x:e.clientX,y:e.clientY,t:Date.now()};
+                    }, {passive:true});
+                    document.addEventListener('pointerup', function(e){
+                        if(!start) return;
+                        var dx=Math.abs(e.clientX-start.x), dy=Math.abs(e.clientY-start.y);
+                        var dt=Date.now()-start.t;
+                        start=null;
+                        if(dx<12 && dy<12 && dt<300){
+                            // It's a tap: report horizontal position as a fraction.
+                            var ratio = e.clientX / window.innerWidth;
+                            try { parent.postMessage({source:'epub-tap', ratio:ratio}, '*'); } catch(err){}
+                        }
+                    }, {passive:true});
+                    document.addEventListener('pointercancel', function(){ start=null; }, {passive:true});
+                })();
+            `;
+            (doc.body || doc.documentElement).appendChild(s);
+        }
+
+        // Listen for tap reports from the iframe and dispatch to nav zones.
+        window.addEventListener('message', (e) => {
+            if (!e.data || e.data.source !== 'epub-tap') return;
+            const ratio = e.data.ratio;
+            let zone;
+            if (ratio < 0.33) zone = 'left';
+            else if (ratio > 0.66) zone = 'right';
+            else zone = 'center';
+            handleTapZone(zone);
+        });
+
         // Adapt the per-image max-height to how many images are visible in the
         // current chunk, so a lone image fills the screen while a chunk with
         // several images keeps them compact. Sets --epub-img-max-height on the
@@ -2735,6 +3077,7 @@
                 if (structural) {
                     if (chineseFontsEnabled) applyChineseFontMapping(iframe);
                     applyImageLayoutOverride(iframe);   // re-assert after injected blocks
+                    injectTapDetector(iframe);          // re-inject tap detector on new content
                 }
             });
 
@@ -2771,10 +3114,10 @@
             lastChunkKey = null;
             const statusEl = document.getElementById('chunkStatus');
             if (statusEl) statusEl.textContent = '';
-            prevBtn.disabled = true;
-            nextBtn.disabled = true;
-            mobilePrevBtn.disabled = true;
-            mobileNextBtn.disabled = true;
+            if (prevBtn) prevBtn.disabled = true;
+            if (nextBtn) nextBtn.disabled = true;
+            if (mobilePrevBtn) mobilePrevBtn.disabled = true;
+            if (mobileNextBtn) mobileNextBtn.disabled = true;
             tocBtn.disabled = true;
             tocList.innerHTML = '';
             reader.innerHTML = '<div class="translation-overlay" id="translationOverlay"><div class="translation-spinner"></div><div class="translation-status">Translating page content...</div></div>';
@@ -2905,6 +3248,7 @@
 
                     applyChineseFontMapping(iframe);
                     applyImageLayoutOverride(iframe);
+                    injectTapDetector(iframe);
                     setupContentObserver(iframe);
 
                     const targetChunk = pendingChunkOnDisplay;
@@ -2950,16 +3294,20 @@
                     errorDiv.textContent = 'Reader failed to render (displayed event did not fire). Open Diag for details.';
                 }
 
-                prevBtn.disabled = false;
-                nextBtn.disabled = false;
-                mobilePrevBtn.disabled = false;
-                mobileNextBtn.disabled = false;
+                if (prevBtn) prevBtn.disabled = false;
+                if (nextBtn) nextBtn.disabled = false;
+                if (mobilePrevBtn) mobilePrevBtn.disabled = false;
+                if (mobileNextBtn) mobileNextBtn.disabled = false;
                 tocBtn.disabled = false;
                 errorDiv.textContent = '';
                 updateButtonStates();
                 loadTableOfContents();
 
                 diag.info('loadEpubFile: COMPLETE — group=' + startGroup, 'chunk=' + currentChunkIndex);
+                // Start in immersive mode: show chrome briefly, then auto-hide
+                // so the reader opens straight into the book.
+                showChrome();
+                showTapHint();
             } catch (error) {
                 const errorMsg = `Failed to load EPUB: ${error.message || error}`;
                 errorDiv.textContent = errorMsg;
@@ -3032,6 +3380,7 @@
 
             applyChineseFontMapping(iframe);
             applyImageLayoutOverride(iframe);
+            injectTapDetector(iframe);
             setupContentObserver(iframe);
 
             showChunk(chunkIndex);
@@ -3150,22 +3499,12 @@
         }
 
         function updateButtonStates() {
-            if (!rendition || !book || !book.spine) return;
-            try {
-                const gi = currentGroupIndex();
-                const plan = currentChunkPlan || chunkPlans.get(currentSpineIndex);
-                const atFirstChunk = currentChunkIndex === 0;
-                const atLastChunk = plan ? currentChunkIndex >= plan.chunks.length - 1 : true;
-                const hasPrevGroup = gi > 0;
-                const hasNextGroup = gi < spineGroups.length - 1;
-
-                prevBtn.disabled = atFirstChunk && !hasPrevGroup;
-                nextBtn.disabled = atLastChunk && !hasNextGroup;
-                mobilePrevBtn.disabled = prevBtn.disabled;
-                mobileNextBtn.disabled = nextBtn.disabled;
-            } catch (error) {
-                diag.error('updateButtonStates: ' + error.message);
-            }
+            // The legacy prev/next/mobile buttons were removed in the immersive
+            // redesign; navigation availability is now exposed via canGoPrev()/
+            // canGoNext() for the tap zones. This function is kept as a no-op
+            // hook (some call sites still invoke it) — no DOM buttons to update.
+            // It also refreshes the progress indicator + status text.
+            updateProgressAndStatus();
         }
 
         // Table of Contents
@@ -3282,6 +3621,9 @@
         // Initialize
         setupDragAndDrop();
         updateBrowserSupportInfo();
+        setupTapZones();          // immersive UI: tap-zone navigation + chrome auto-hide
+        showChrome();             // chrome visible on first load (no book yet)
+        showTapHint();            // brief hint, fades on its own
 
         // Monitor DOM changes
         const observer = new MutationObserver((mutations) => {
