@@ -65,9 +65,28 @@
             background: var(--paper);
             overflow: hidden;
         }
-        #reader iframe {
+        /* epub.js (flow: scrolled, mounted on a div) makes its OWN container the
+           scroll surface but doesn't set overflow on it. That container is the
+           direct child of #reader. Give it the viewport height (a fixed scroll
+           WINDOW) + overflow-y:auto so it scrolls; epub.js sizes the iframe to
+           the full content height (taller than the window) — that delta is what
+           creates scroll. Do NOT cap the iframe height. */
+        #reader > div, #reader > .epub-container {
             width: 100% !important;
             height: 100% !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        #reader > div > .epub-view, #reader .epub-view {
+            /* epub.js's per-view wrapper holds the iframe sized to content height.
+               Don't cap it — it must be free to exceed the viewport so the
+               container above can scroll through it. */
+            overflow: visible !important;
+        }
+        #reader iframe {
+            width: 100% !important;
+            /* No forced height: epub.js sizes the iframe to content height. */
             border: none;
         }
 
@@ -667,196 +686,13 @@
         .copy-path-btn:hover {
             background: #5a6268;
         }
-        /* Mobile adjustments - Updated for foldable devices */
-        @media (max-width: 1000px),
-               (max-height: 600px),
-               (pointer: coarse) {
-            body {
-                padding: 10px;
-                padding-bottom: 80px;
-            }
-            h1 {
-                font-size: 1.5em;
-                margin: 10px 0;
-            }
-            #reader-container {
-                flex-direction: column;
-                width: calc(100vw - 20px);
-                gap: 0;
-                margin-bottom: 100px;
-            }
-            #reader {
-                height: calc(100vh + 50px);
-                width: 100%;
-                min-height: 700px;
-            }
-            #prevBtn, #nextBtn {
-                display: none;
-            }
-            #controls {
-                width: calc(100vw - 20px);
-                margin: 5px 0;
-            }
-            button {
-                padding: 8px 15px;
-                font-size: 14px;
-            }
-            #mobile-nav {
-                display: flex;
-                position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                width: 100%;
-                margin: 0;
-                padding: 15px 20px;
-                box-sizing: border-box;
-                background: white;
-                border-top: 1px solid #ccc;
-                box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
-                z-index: 100;
-            }
-            #mobilePrevBtn, #mobileNextBtn {
-                width: 60px;
-                height: 40px;
-                font-size: 14px;
-            }
-            input[type="file"] {
-                margin: 5px 0;
-            }
-            #tocContent, #libraryContent {
-                max-width: 95%;
-                max-height: 85%;
-                padding: 15px;
-            }
-            #tocContent h2, #libraryContent h2 {
-                font-size: 1.2em;
-            }
-            #closeModal, #closeLibraryModal {
-                padding: 3px 8px;
-                font-size: 12px;
-            }
-            .library-item {
-                padding: 12px;
-                margin: 8px 0;
-            }
-            .library-item-title {
-                font-size: 1em;
-            }
-            .library-item-info {
-                font-size: 0.85em;
-            }
-            .library-item-actions {
-                font-size: 0.75em;
-                margin-top: 6px;
-                padding: 6px;
-            }
-        }
 
-        /* iPhone Pro Max and similar large phones */
-        @media (min-width: 400px) and (max-width: 500px) and (min-height: 800px) and (orientation: portrait) {
-            #reader-container {
-                margin-bottom: 120px !important;
-            }
-            #reader {
-                height: calc(100vh + 100px) !important;
-                min-height: 900px !important;
-            }
-        }
-
-        /* Specific handling for Galaxy Fold and similar devices */
-        @media (min-width: 1700px) and (max-width: 2000px) and (min-height: 2000px) and (orientation: portrait) {
-            body {
-                padding: 15px;
-                padding-bottom: 100px;
-            }
-            h1 {
-                font-size: 1.8em;
-                margin: 15px 0;
-            }
-            #reader-container {
-                flex-direction: column;
-                width: calc(100vw - 30px);
-                gap: 0;
-                margin-bottom: 120px;
-            }
-            #reader {
-                height: calc(100vh + 80px);
-                width: 100%;
-                min-height: 1100px;
-            }
-            #prevBtn, #nextBtn {
-                display: none;
-            }
-            #controls {
-                width: calc(100vw - 30px);
-                margin: 10px 0;
-            }
-            button {
-                padding: 15px 25px;
-                font-size: 18px;
-            }
-            #mobile-nav {
-                display: flex;
-                position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                width: 100%;
-                margin: 0;
-                padding: 20px 30px;
-                box-sizing: border-box;
-                background: white;
-                border-top: 1px solid #ccc;
-                box-shadow: 0 -2px 15px rgba(0,0,0,0.1);
-                z-index: 100;
-            }
-            #mobilePrevBtn, #mobileNextBtn {
-                width: 100px;
-                height: 60px;
-                font-size: 18px;
-            }
-            input[type="file"] {
-                margin: 10px 0;
-            }
-            #tocContent, #libraryContent {
-                max-width: 85%;
-                max-height: 75%;
-                padding: 20px;
-            }
-        }
-
-        /* Extra small mobile devices */
-        @media (max-height: 600px) {
-            body {
-                padding-bottom: 70px !important;
-            }
-            #reader-container {
-                margin-bottom: 60px !important;
-            }
-            #reader {
-                height: calc(100vh + 20px) !important;
-                min-height: 500px !important;
-            }
-            #mobile-nav {
-                padding: 10px 20px !important;
-            }
-            #mobilePrevBtn, #mobileNextBtn {
-                height: 35px !important;
-                font-size: 12px !important;
-            }
-        }
-
-        /* Very tall phones like iPhone Pro Max */
-        @media (min-height: 900px) and (max-width: 500px) {
-            #reader {
-                height: calc(100vh + 150px) !important;
-                min-height: 1000px !important;
-            }
-            #reader-container {
-                margin-bottom: 150px !important;
-            }
-        }
+        /* Legacy responsive overrides for #reader/#reader-container/#mobile-nav
+           were removed — those elements no longer exist (immersive redesign),
+           and their height:calc(100vh+Npx)!important rules were breaking the
+           epub.js scroll container on mobile, clipping chunk bottoms. The
+           immersive #reader-stage / #reader / epub-container CSS above handles
+           all screen sizes via 100dvh + flex. */
     </style>
 </head>
 <body>
@@ -1125,7 +961,19 @@
                     rendition.resize(Math.floor(r.width), Math.floor(r.height));
                     diag.info('resizeRendition: ' + Math.floor(r.width) + 'x' + Math.floor(r.height));
                 }
-            }, 150);
+            }, 120);
+        }
+
+        // ResizeObserver fires reliably when the reader-stage changes size —
+        // including the mobile address-bar slide that window.resize/visualViewport
+        // sometimes miss. This is the primary resize driver; the window/visualViewport
+        // listeners are belt-and-suspenders.
+        let stageResizeObserver = null;
+        function setupStageResizeObserver() {
+            const stage = document.getElementById('reader-stage');
+            if (!stage || typeof ResizeObserver === 'undefined') return;
+            stageResizeObserver = new ResizeObserver(() => resizeRendition());
+            stageResizeObserver.observe(stage);
         }
 
         // Navigation availability (replaces the old prevBtn/nextBtn disabled logic).
@@ -1272,7 +1120,7 @@
         // would cascade and hide a child we wanted to show → blank screen.
         // Top-level children are a clean partition: showing some and hiding the
         // rest never conflicts, because none is an ancestor of another.
-        const CHUNK_BLOCK_SELECTOR = 'p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dd, dt, figcaption, section, article, aside, main, figure';
+        const CHUNK_BLOCK_SELECTOR = 'p, div, ol, ul, li, h1, h2, h3, h4, h5, h6, blockquote, pre, table, tr, td, th, dd, dt, dl, figcaption, section, article, aside, main, nav, figure';
         const CHUNK_MEDIA_SELECTOR = 'img, svg, image, video, picture, canvas';
         const CHUNK_CHAR_BUDGET = 5000;     // pack blocks until ~this many chars (~1.5–2 book pages)
         const CHUNK_MIN_CHARS = 2000;       // don't close a chunk below this (floor)
@@ -1316,6 +1164,22 @@
             return !!el.querySelector(CHUNK_MEDIA_SELECTOR);
         }
 
+        // Is `el` a footnote / endnote ENTRY (the trailing note text, not the
+        // inline marker)? These are reference material, not reading content —
+        // if chunked as body text they interleave with prose and show trailing
+        // "*1 *2 *3" marker runs at chunk ends. We exclude them from the leaf
+        // set entirely (the inline <sup> markers in the body stay visible).
+        function isFootnoteEntry(el) {
+            const role = el.getAttribute('role');
+            if (role === 'doc-footnote' || role === 'doc-endnote') return true;
+            // epub:type is namespaced; check both raw and stripped forms.
+            const et = el.getAttribute('epub:type') || el.getAttribute('epub_type') || '';
+            if (/\b(footnote|endnote|rearnote)\b/i.test(et)) return true;
+            const cls = el.getAttribute('class') || '';
+            if (/\b(footnote|endnote|rearnote)\b/i.test(cls)) return true;
+            return false;
+        }
+
         // The chunk partition is the set of LEAF blocks: block-level elements
         // with content (text or media) that have NO content-bearing block
         // descendant. Leaves form an ANTICHAIN — none is an ancestor of another
@@ -1350,7 +1214,9 @@
 
         function getLeafBlocks(root) {
             if (!root) return [];
-            const all = Array.from(root.querySelectorAll(CHUNK_BLOCK_SELECTOR)).filter(hasContent);
+            const all = Array.from(root.querySelectorAll(CHUNK_BLOCK_SELECTOR))
+                .filter(hasContent)
+                .filter(el => !isFootnoteEntry(el));   // footnotes/endnotes are reference, not reading content
             // A block is a LEAF if:
             //  (a) it has no other content-bearing block descendant, OR
             //  (b) it DIRECTLY contains media (e.g. <figure><img/><figcaption>…)
@@ -1637,6 +1503,9 @@
         // it creates around the iframe); we fall back to the #reader div and the
         // iframe contentWindow to be safe.
         function getReaderScroller() {
+            // The scroll surface is epub.js's container (rendition.manager.container),
+            // which we've forced to overflow-y:auto via CSS. Fall back to #reader
+            // then the iframe window.
             try {
                 if (rendition && rendition.manager && rendition.manager.container) {
                     return rendition.manager.container;
@@ -1731,12 +1600,24 @@
         // an adaptive max image height).
         function applyChunkVisibility(doc, plan, chunkIndex) {
             if (!doc || !doc.body) return { shown: 0, hidden: 0, wholeBody: false, visibleMedia: 0 };
+
+            // Footnote/endnote entries are reference material, never reading
+            // content. Hide them in EVERY branch (including wholeBody fallback)
+            // so trailing "*1 *2 *3" runs never appear at chunk ends. The inline
+            // <sup> markers in the body stay visible.
+            const hideFootnotes = () => {
+                const fnEntries = doc.body.querySelectorAll(CHUNK_BLOCK_SELECTOR);
+                fnEntries.forEach(el => { if (isFootnoteEntry(el)) el.style.display = 'none'; });
+            };
+
             // wholeBody fallback: no leaf blocks were found, so leave the
-            // document untouched (show everything) rather than blanking it.
+            // document untouched (show everything) rather than blanking it —
+            // but still suppress footnotes.
             if (plan && plan.wholeBody) {
                 // Clear any stale display:none on orphans from a prior chunk pass.
                 const stale = doc.body.querySelectorAll(CHUNK_MEDIA_SELECTOR + ', ' + INLINE_MARKUP_SELECTOR);
                 stale.forEach(el => { if (el.style.display === 'none') el.style.display = ''; });
+                hideFootnotes();
                 const visibleMedia = countVisibleTopLevelMedia(doc.body);
                 return { shown: -1, hidden: 0, wholeBody: true, visibleMedia };
             }
@@ -1749,6 +1630,10 @@
                 b.style.display = inChunk ? '' : 'none';
                 if (inChunk) { shown++; visibleLeaves.push(b); } else { hidden++; }
             });
+            // Footnote/endnote entries are excluded from chunks (reference only) —
+            // keep them hidden so they never clutter the reading flow. The inline
+            // <sup> markers in the body remain visible.
+            hideFootnotes();
             // Collapse ancestor containers whose leaves are all hidden.
             collapseHiddenContainers(doc.body, visibleLeaves);
             // Sync orphan media/inline elements: show only if their nearest leaf
@@ -3650,6 +3535,7 @@
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', resizeRendition);
         }
+        setupStageResizeObserver();   // primary: fires reliably on address-bar changes
 
         // Monitor DOM changes
         const observer = new MutationObserver((mutations) => {
