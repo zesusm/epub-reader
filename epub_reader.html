@@ -1568,7 +1568,18 @@
 
         // Capture the current chunk's scroll position. Call at the START of any
         // navigation (before the iframe/DOM changes) so going back restores it.
+        // Guarded: don't capture during an active text selection (long-press),
+        // which fires spurious events that would store a wrong position.
         function captureCurrentScroll() {
+            // If the user is selecting text, skip — the scroll position during
+            // selection drag is not a "navigation away" we want to remember.
+            const sel = window.getSelection && window.getSelection();
+            if (sel && sel.toString().trim().length > 0) return;
+            try {
+                const iframe = document.querySelector('#reader iframe');
+                const isel = iframe && iframe.contentWindow && iframe.contentWindow.getSelection();
+                if (isel && isel.toString().trim().length > 0) return;
+            } catch (e) {}
             if (lastChunkKey) captureScroll(lastChunkKey);
         }
 
@@ -1757,10 +1768,15 @@
             if (chunkIndex < 0) chunkIndex = 0;
 
             // Remember where we were in the OUTGOING chunk before switching, so
-            // going back to it later restores that position.
-            if (lastChunkKey) captureScroll(lastChunkKey);
+            // going back to it later restores that position. BUT skip this if
+            // we're re-displaying the SAME chunk (e.g. observer re-trigger,
+            // media-URL resolution, or a selection event) — in that case we
+            // must NOT capture/restore, or the scroll jumps to a stale saved
+            // position every time (the "long-press jumps back" bug).
             const newKey = currentSpineIndex + ':' + chunkIndex;
-            const isBack = scrollMemory.has(newKey);
+            const isRedisplaySameChunk = (lastChunkKey === newKey);
+            if (lastChunkKey && !isRedisplaySameChunk) captureScroll(lastChunkKey);
+            const isBack = !isRedisplaySameChunk && scrollMemory.has(newKey);
 
             currentChunkIndex = chunkIndex;
             const vis = applyChunkVisibility(doc, currentChunkPlan, chunkIndex);
@@ -1768,11 +1784,14 @@
             // Adapt image max-height to how many images are visible in this chunk.
             setImageChunkHeight(doc, vis.visibleMedia);
             // Scroll: restore remembered position on back-nav, else top of chunk.
+            // Skip entirely on same-chunk redisplay (don't disturb the user's scroll).
             // (Defer a tick so the just-shown/hide display changes have laid out.)
-            setTimeout(() => restoreOrTopScroll(newKey), 0);
+            if (!isRedisplaySameChunk) {
+                setTimeout(() => restoreOrTopScroll(newKey), 0);
+            }
             diag.info('showChunk: spine=' + currentSpineIndex, 'chunk=' + chunkIndex + '/' + currentChunkPlan.chunks.length,
                 'wholeBody=' + vis.wholeBody, vis.wholeBody ? '' : ('shown=' + vis.shown + ' hidden=' + vis.hidden),
-                isBack ? '(restoring scroll)' : '(scroll to top)');
+                isRedisplaySameChunk ? '(same chunk, no scroll change)' : (isBack ? '(restoring scroll)' : '(scroll to top)'));
 
             lastChunkKey = newKey;
 

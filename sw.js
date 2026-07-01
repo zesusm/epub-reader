@@ -4,7 +4,7 @@
 // picker) and any future translation API calls are NOT cached — they go straight
 // to the network.
 
-const CACHE_NAME = 'epub-reader-shell-v22';
+const CACHE_NAME = 'epub-reader-shell-v23';
 const APP_SHELL = [
   './epub_reader.html',
   './manifest.webmanifest',
