@@ -988,6 +988,12 @@
             resizeTimer = setTimeout(() => {
                 const r = reader.getBoundingClientRect();
                 if (r.width > 0 && r.height > 0) {
+                    // rendition.resize() makes epub.js RE-DISPLAY the current
+                    // section (fresh iframe body), destroying the scroll
+                    // position — capture it first so the re-render path in
+                    // 'displayed' can restore it. (The selection guard in
+                    // captureCurrentScroll also protects against long-press.)
+                    captureCurrentScroll();
                     rendition.resize(Math.floor(r.width), Math.floor(r.height));
                     diag.info('resizeRendition: ' + Math.floor(r.width) + 'x' + Math.floor(r.height));
                 }
@@ -1768,7 +1774,13 @@
 
         // Ensure `currentChunkPlan` matches the currently rendered spine, then
         // show the requested chunk. No-op if doc not ready.
-        function showChunk(chunkIndex) {
+        // opts.freshDoc: the iframe document was just (re)built — its scroll
+        // state is meaningless. Skip capturing it (it would overwrite the real
+        // remembered position with 0) and DO restore even when redisplaying
+        // the same chunk (the v23 same-chunk skip only applies to a live doc
+        // the user is actually looking at).
+        function showChunk(chunkIndex, opts = {}) {
+            const freshDoc = !!opts.freshDoc;
             const iframe = document.querySelector('#reader iframe');
             const doc = iframe && iframe.contentDocument;
             if (!doc || !doc.body) {
@@ -1790,8 +1802,8 @@
             // must NOT capture/restore, or the scroll jumps to a stale saved
             // position every time (the "long-press jumps back" bug).
             const newKey = currentSpineIndex + ':' + chunkIndex;
-            const isRedisplaySameChunk = (lastChunkKey === newKey);
-            if (lastChunkKey && !isRedisplaySameChunk) captureScroll(lastChunkKey);
+            const isRedisplaySameChunk = (lastChunkKey === newKey) && !freshDoc;
+            if (lastChunkKey && !isRedisplaySameChunk && !freshDoc) captureScroll(lastChunkKey);
             const isBack = !isRedisplaySameChunk && scrollMemory.has(newKey);
 
             currentChunkIndex = chunkIndex;
@@ -3235,8 +3247,13 @@
             doc.documentElement.style.setProperty('--epub-img-max-height', h + 'vh');
         }
 
+        let contentObserver = null;   // single live observer; re-created per (re)render
         function setupContentObserver(iframe) {
             if (!iframe || !iframe.contentDocument) return;
+            // One observer at a time: finalizeGroupRender runs on every resize
+            // re-render, and stacking observers on the same body multiplies
+            // every callback (font remap, tap re-inject, ...) per resize.
+            if (contentObserver) { try { contentObserver.disconnect(); } catch (e) {} }
 
             // Only react to structural changes (new content loaded by epub.js),
             // NOT to attribute changes. Our chunk display logic toggles
@@ -3254,6 +3271,7 @@
                 }
             });
 
+            contentObserver = observer;
             observer.observe(iframe.contentDocument.body, {
                 childList: true,
                 subtree: true
@@ -3419,7 +3437,27 @@
                         return;
                     }
 
-                    // Lone render (no pending group): do the classic single-spine setup.
+                    // No pending group: this 'displayed' is a RE-RENDER —
+                    // epub.js re-displays the current section on every
+                    // rendition.resize() (chrome toggle, mobile address bar,
+                    // orientation). The fresh body contains ONLY that spine's
+                    // original content: injected sibling-spine blocks are gone
+                    // and the old chunk plan no longer matches. Re-finalize
+                    // the whole GROUP (idempotent re-inject + rebuild plan)
+                    // and stay on the chunk the user was reading.
+                    const gi = groupIndexOfSpine.has(spineIndex) ? groupIndexOfSpine.get(spineIndex) : null;
+                    const group = (gi !== null) ? spineGroups[gi] : null;
+                    const isRerenderOfCurrent = !!group && displayedSpineIndex === group.firstSpine;
+                    const targetChunk = isRerenderOfCurrent ? currentChunkIndex : pendingChunkOnDisplay;
+                    pendingChunkOnDisplay = 0;
+
+                    if (group) {
+                        diag.info('displayed: re-render of group ' + gi + (isRerenderOfCurrent ? ' (keeping chunk ' + targetChunk + ')' : ''));
+                        finalizeGroupRender(gi, targetChunk);
+                        return;
+                    }
+
+                    // Spine outside any group (shouldn't happen): classic lone setup.
                     displayedSpineIndex = spineIndex;
                     currentSpineIndex = spineIndex;
                     currentChunkPlan = buildChunkPlan(iframe.contentDocument);
@@ -3432,9 +3470,7 @@
                     await resolveContentMediaUrls(iframe);
                     setupContentObserver(iframe);
 
-                    const targetChunk = pendingChunkOnDisplay;
-                    pendingChunkOnDisplay = 0;
-                    showChunk(targetChunk);
+                    showChunk(targetChunk, { freshDoc: true });
                     savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
                 });
 
@@ -3522,6 +3558,16 @@
             if (!hostDoc || !hostDoc.body) return 0;
             let injected = 0;
             for (let k = 1; k < group.spines.length; k++) {
+                // A resize re-render may have replaced the iframe document while
+                // we were loading a section — stop appending into a dead body
+                // (the new 'displayed' event re-runs this from scratch).
+                if (iframe.contentDocument !== hostDoc) {
+                    diag.info('injectGroupBlocks: iframe doc replaced mid-inject, aborting');
+                    break;
+                }
+                // Idempotent: skip spines whose blocks are already in the doc
+                // (e.g. a 'displayed' event that didn't actually rebuild the body).
+                if (hostDoc.querySelector('[data-injected-spine="' + group.spines[k] + '"]')) continue;
                 const section = book.spine.get(group.spines[k]);
                 if (!section) continue;
                 // The source section's href directory (e.g. "xhtml/") — the
@@ -3540,6 +3586,7 @@
                         // 404 against the host iframe's base.
                         await resolveMediaUrlsUnder(b, sectionDir);
                         const adopted = hostDoc.adoptNode(b, true);
+                        adopted.setAttribute('data-injected-spine', String(group.spines[k]));
                         hostDoc.body.appendChild(adopted);
                         injected++;
                     }
@@ -3554,13 +3601,19 @@
 
         // Called after the first member of a group has rendered (via 'displayed').
         // Injects the rest, builds the plan, shows the requested chunk.
+        // Re-entrant-safe: resize storms fire 'displayed' repeatedly; each call
+        // bumps the token and any older run aborts at its next await, so only
+        // the newest finalizer builds the plan and shows the chunk.
+        let groupFinalizeToken = 0;
         async function finalizeGroupRender(groupIndex, chunkIndex) {
+            const tok = ++groupFinalizeToken;
             const group = spineGroups[groupIndex];
             if (!group) { diag.warn('finalizeGroupRender: no group ' + groupIndex); return; }
             const iframe = document.querySelector('#reader iframe');
             if (!iframe || !iframe.contentDocument) { diag.warn('finalizeGroupRender: no iframe doc'); return; }
 
             await injectGroupBlocks(group);
+            if (tok !== groupFinalizeToken) { diag.info('finalizeGroupRender: superseded during inject, aborting'); return; }
 
             displayedSpineIndex = group.firstSpine;
             currentSpineIndex = group.firstSpine;
@@ -3573,9 +3626,10 @@
             // Await: all media URLs must be fetchable BEFORE the chunk shows,
             // or the first display of a figure flashes a broken image.
             await resolveContentMediaUrls(iframe);
+            if (tok !== groupFinalizeToken) { diag.info('finalizeGroupRender: superseded during resolve, aborting'); return; }
             setupContentObserver(iframe);
 
-            showChunk(chunkIndex);
+            showChunk(chunkIndex, { freshDoc: true });
             savePosition(`${currentSpineIndex}:${currentChunkIndex}`, currentFileName);
             updateButtonStates();
             diag.info('finalizeGroupRender: group ' + groupIndex + ' (spines ' + group.spines.join(',') + ') chunk=' + chunkIndex + '/' + currentChunkPlan.chunks.length);
@@ -3853,8 +3907,8 @@
 
         // Version stamp — confirms which code version is actually running in
         // the browser (helps distinguish real bugs from stale SW cache).
-        console.log('%c=== EPUB Reader code version: v24-media-resolution (sw v24) ===', 'color:#c8702c;font-weight:bold');
-        diag.info('=== EPUB Reader code version: v24-media-resolution (sw v24) ===');
+        console.log('%c=== EPUB Reader code version: v25-resize-rerender (sw v25) ===', 'color:#c8702c;font-weight:bold');
+        diag.info('=== EPUB Reader code version: v25-resize-rerender (sw v25) ===');
 
         // ---- PWA install prompt ----
         // Chrome fires 'beforeinstallprompt' when it considers the app
