@@ -1173,8 +1173,14 @@
         // is (a) a real heading tag, or (b) a DECORATIVE divider — text made
         // solely of repeated non-alphanumeric glyphs like "====", "##", "* * *".
         const CHUNK_HEADING_TAGS = new Set(['H1','H2','H3','H4','H5','H6']);
+        // NOTE: all tagName comparisons in the chunking predicates must be
+        // case-normalized: live iframe docs are HTML (tagName "OBJECT") but
+        // section.load() docs are XML (tagName "object"). A case-sensitive
+        // check silently fails on injected sibling spines — figures stop being
+        // atomic leaves and their media never gets adopted (the Escape from
+        // Rome missing-figures bug).
         function isSectionStarter(el) {
-            if (CHUNK_HEADING_TAGS.has(el.tagName)) return true;
+            if (CHUNK_HEADING_TAGS.has(el.tagName.toUpperCase())) return true;
             const text = (el.textContent || '').trim();
             if (!text || text.length > 40) return false;
             // Decorative divider: no letters/digits, only repeated symbol glyphs
@@ -1226,7 +1232,7 @@
         // as leaves so they travel as one unit with their caption.
         function hasDirectMediaChild(el) {
             for (const c of el.children) {
-                if (CHUNK_MEDIA_TAGS.has(c.tagName)) return true;
+                if (CHUNK_MEDIA_TAGS.has(c.tagName.toUpperCase())) return true;
             }
             return false;
         }
@@ -1235,9 +1241,9 @@
         // browser renumbers visible <li>s from 1 in each chunk, producing the
         // trailing "1. 2. 3." fragments.
         function hasDirectListItemChild(el) {
-            if (!CHUNK_LIST_TAGS.has(el.tagName)) return false;
+            if (!CHUNK_LIST_TAGS.has(el.tagName.toUpperCase())) return false;
             for (const c of el.children) {
-                if (c.tagName === 'LI') return true;
+                if (c.tagName.toUpperCase() === 'LI') return true;
             }
             return false;
         }
@@ -1323,7 +1329,17 @@
                 const block = blocks[i];
                 // Effective size = text length + a synthetic cost per media element.
                 // Media otherwise rides free (0 text) and chunks over-pack images.
-                const mediaCount = block.querySelectorAll(CHUNK_MEDIA_SELECTOR).length;
+                // Count only TOP-LEVEL media: a fallback <img> nested inside an
+                // <object> (or an <image> inside <svg>) is the same figure, not
+                // a second one.
+                const mediaCount = Array.from(block.querySelectorAll(CHUNK_MEDIA_SELECTOR)).filter(el => {
+                    let p = el.parentElement;
+                    while (p && p !== block) {
+                        if (CHUNK_MEDIA_TAGS.has(p.tagName.toUpperCase())) return false;
+                        p = p.parentElement;
+                    }
+                    return true;
+                }).length;
                 const len = block.textContent.trim().length + mediaCount * CHUNK_MEDIA_CHAR_COST;
                 const starter = isSectionStarter(block);
                 const meetsFloor = budget >= CHUNK_MIN_CHARS;
@@ -2946,6 +2962,29 @@
                     page-break-after: auto !important;
                     break-after: auto !important;
                 }
+                /* SVG figures that arrived as <object data="...svg"> (e.g.
+                   Escape from Rome) are converted to <img data-svg-object> by
+                   resolveMediaUrlsUnder(). Their SVGs carry only a viewBox —
+                   natural size is the 300x150 default — so scale them to the
+                   column width; object-fit:contain keeps the aspect ratio when
+                   the max-height clamp kicks in. */
+                img[data-svg-object] {
+                    width: 100% !important;
+                    height: auto !important;
+                    max-height: var(--epub-img-max-height, 45vh) !important;
+                    object-fit: contain !important;
+                }
+                /* Safety net for any <object> that slips through unconverted. */
+                object {
+                    width: 100% !important;
+                    height: auto !important;
+                    max-width: 100% !important;
+                    max-height: var(--epub-img-max-height, 45vh) !important;
+                    page-break-before: auto !important;
+                    break-before: auto !important;
+                    page-break-after: auto !important;
+                    break-after: auto !important;
+                }
                 figure, .img90, .img90b, .img90ba, .imgcb, .imglb, .imgc {
                     height: auto !important;
                     min-height: 0 !important;
@@ -2968,110 +3007,177 @@
         // parent. The parent maps left/center/right → prev/toggle/next. Native
         // scrolling and text selection work because the iframe owns them; the
         // injected script only REPORTS taps, never prevents default behavior.
-        // Resolve media URLs in a live iframe document that epub.js FAILED to
-        // rewrite. epub.js only rewrites <img src> and <a href>; it does NOT
-        // touch <object data="...svg"> (used for SVG-with-PNG-fallback figures),
-        // leaving them as raw relative URLs that 404. We resolve those against
-        // the current section's directory and fetch blob URLs from the archive.
-        // Also fixes any <img src> epub.js may have missed. Idempotent: skips
-        // elements already holding blob:/data:/http(s): URLs.
+        // ---- Archive media resolution (shared) ----
+        // Some content never gets its media URLs rewritten to fetchable ones:
+        // sibling spines adopted by injectGroupBlocks() bypass epub.js's
+        // serialize/substitute hook entirely, and <object data="...svg"> can be
+        // missed even on rendered spines. These helpers resolve a relative URL
+        // to its zip entry and hand out a blob URL, cached per entry so repeat
+        // chunk displays reuse (not re-create) blobs. Cache is revoked+cleared
+        // in resetReader().
+        let archiveBlobCache = new Map();   // zip path -> blob URL (per book)
+        let archiveEntryNames = null;       // cached Object.keys(zip.files)
+
+        function archiveZip() {
+            return (book && book.archive && book.archive.zip) ? book.archive.zip : (book && book.zip) || null;
+        }
+
+        // OPF root directory inside the zip (e.g. "OEBPS/"). epub.js keeps it
+        // at book.path.directory (book.directory does NOT exist — the old code
+        // read it and always got '', which is why every lookup used to fall
+        // through to suffix matching). Fallback: container.packagePath dirname.
+        // Normalized: no leading slash, trailing slash (or '' for zip-root OPF).
+        function opfDirectory() {
+            let dir = '';
+            try {
+                if (book && book.path && book.path.directory) dir = book.path.directory;
+                else if (book && book.container && book.container.packagePath) dir = book.container.packagePath.replace(/[^/]*$/, '');
+            } catch (e) {}
+            dir = String(dir).replace(/^\//, '');
+            if (dir && !dir.endsWith('/')) dir += '/';
+            return dir;
+        }
+
+        function normalizeZipPath(base, rel) {
+            const out = [];
+            for (const p of (base + rel).split('/')) {
+                if (p === '..') out.pop();
+                else if (p !== '.' && p !== '') out.push(p);
+            }
+            return out.join('/');
+        }
+
+        // Candidate zip paths for a relative URL found in section content,
+        // best first: OPF-rooted (correct for e.g. "OEBPS/xhtml/../images/x.svg"
+        // → "OEBPS/images/x.svg"), then section-relative without the OPF root
+        // (books whose OPF sits at the zip root), then OPF root alone.
+        function archivePathCandidates(rel, sectionDir) {
+            const opfDir = opfDirectory();
+            const bases = [opfDir + sectionDir, sectionDir, opfDir];
+            return [...new Set(bases.map(b => normalizeZipPath(b, rel)))];
+        }
+
+        function getArchiveEntryNames(zip) {
+            if (!archiveEntryNames) {
+                try { archiveEntryNames = Object.keys(zip.files || {}); } catch (e) { archiveEntryNames = []; }
+            }
+            return archiveEntryNames;
+        }
+
+        // MIME types for blob URLs. JSZip's .async('blob') yields a Blob with
+        // an EMPTY type; Chrome content-sniffs raster images but refuses to
+        // render SVG (and CSS) without the real MIME type — an untyped SVG
+        // blob in an <img> or <object> just shows the broken-image icon.
+        const ARCHIVE_MIME = {
+            svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg',
+            jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+            bmp: 'image/bmp', avif: 'image/avif', ico: 'image/x-icon',
+            css: 'text/css', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg'
+        };
+
+        // zip path -> blob URL, cached. Exact entry match first; last-resort
+        // fallback matches by path suffix against the real entry list (covers
+        // books whose zip layout doesn't line up with the OPF paths).
+        async function archiveBlobUrl(path) {
+            const zip = archiveZip();
+            if (!zip || !path) return null;
+            if (archiveBlobCache.has(path)) return archiveBlobCache.get(path);
+            let entry = null;
+            try { entry = zip.file(path) || zip.file(path.replace(/^\//, '')); } catch (e) {}
+            if (!entry) {
+                const bare = path.replace(/^\//, '');
+                const matches = getArchiveEntryNames(zip).filter(e => e === bare || e.endsWith('/' + bare));
+                // Ambiguous suffix hits: prefer a conventional images/ path.
+                const preferred = matches.length > 1 ? (matches.find(m => /images\//.test(m)) || matches[0]) : matches[0];
+                if (preferred) { try { entry = zip.file(preferred); } catch (e) {} }
+            }
+            if (!entry) return null;
+            try {
+                const buf = await entry.async('arraybuffer');
+                const ext = (path.split('.').pop() || '').toLowerCase();
+                const blob = new Blob([buf], { type: ARCHIVE_MIME[ext] || '' });
+                const url = URL.createObjectURL(blob);
+                archiveBlobCache.set(path, url);
+                return url;
+            } catch (e) { return null; }
+        }
+
+        // Rewrite relative media URLs under `root` (img src, <object data>,
+        // svg <image href>) to blob URLs from the archive. sectionDir is the
+        // href directory of the section the content came from (e.g. "xhtml/").
+        // Idempotent: skips elements already holding blob:/data:/http(s): URLs.
+        async function resolveMediaUrlsUnder(root, sectionDir) {
+            const stats = { media: 0, fixed: 0, missed: 0, objectsReplaced: 0 };
+            if (!root || !archiveZip()) return stats;
+            const mediaEls = Array.from(root.querySelectorAll('img[src], object[data], image'));
+            stats.media = mediaEls.length;
+            for (const el of mediaEls) {
+                const attr = el.hasAttribute('src') ? 'src'
+                    : (el.hasAttribute('data') ? 'data'
+                    : (el.hasAttribute('href') ? 'href'
+                    : (el.hasAttribute('xlink:href') ? 'xlink:href' : null)));
+                if (!attr) continue;
+                const orig = el.getAttribute(attr);
+                if (!orig || /^(blob:|data:|https?:|#)/i.test(orig)) continue;
+                let done = false;
+                for (const cand of archivePathCandidates(orig, sectionDir)) {
+                    const blobUrl = await archiveBlobUrl(cand);
+                    if (blobUrl) { el.setAttribute(attr, blobUrl); stats.fixed++; done = true; break; }
+                }
+                if (!done) {
+                    stats.missed++;
+                    diag.warn('resolveMediaUrlsUnder: MISS ' + orig + ' tried=[' + archivePathCandidates(orig, sectionDir).join(', ') + '] (sectionDir=' + sectionDir + ' opfDir=' + opfDirectory() + ')');
+                }
+            }
+            // Replace SVG <object>s with real <img>s pointing at the same URL.
+            // Blink never (re)instantiates an <object> that was parsed in a
+            // detached XML doc and adopted, or that sat in a display:none chunk
+            // — its SVG document simply never loads, leaving a blank 300x150
+            // box. <img src="...svg"> renders the same SVG crisply, has none of
+            // the plugin machinery, and picks up the reader's image CSS. The
+            // book's SVGs are self-contained (no external refs), which is
+            // exactly the SVG-in-img contract.
+            for (const obj of Array.from(root.querySelectorAll('object[data]'))) {
+                const type = (obj.getAttribute('type') || '').toLowerCase();
+                const data = obj.getAttribute('data') || '';
+                const isSvg = type.indexOf('svg') !== -1 || /\.svg([?#]|$)/i.test(data);
+                if (!isSvg || !/^(blob:|data:|https?:)/i.test(data)) continue;
+                const odoc = obj.ownerDocument;
+                // createElementNS: a plain createElement in an XML doc would make
+                // a null-namespace <img> that never renders once adopted.
+                const img = odoc.createElementNS('http://www.w3.org/1999/xhtml', 'img');
+                const fallback = obj.querySelector('img');
+                if (fallback && fallback.getAttribute('alt')) img.setAttribute('alt', fallback.getAttribute('alt'));
+                if (obj.getAttribute('id')) img.setAttribute('id', obj.getAttribute('id'));
+                if (obj.getAttribute('class')) img.setAttribute('class', obj.getAttribute('class'));
+                img.setAttribute('data-svg-object', '1');
+                img.setAttribute('src', data);
+                obj.parentNode.replaceChild(img, obj);
+                stats.objectsReplaced++;
+            }
+            return stats;
+        }
+
+        // Live-iframe wrapper: resolve everything in the rendered document,
+        // using the currently displayed section's directory as the base.
         async function resolveContentMediaUrls(iframe) {
-            if (!iframe || !iframe.contentDocument || !book || !book.archive || !book.archive.zip) {
-                diag.warn('resolveContentMediaUrls: skipped (iframe=' + !!iframe + ' book=' + !!book + ' archive=' + !!(book&&book.archive) + ')');
+            if (!iframe || !iframe.contentDocument || !archiveZip()) {
+                diag.warn('resolveContentMediaUrls: skipped (iframe=' + !!iframe + ' book=' + !!book + ' archive=' + !!(book && book.archive) + ')');
                 return;
             }
             const doc = iframe.contentDocument;
-            // Determine the directory of the section currently displayed, for
-            // resolving relative paths. The archive keys entries by their full
-            // zip path (e.g. "OEBPS/images/x.png"), so we resolve relative src
-            // against BOTH the section's directory AND the OPF root directory
-            // (book.directory, e.g. "OEBPS/") — sectionDir alone gives
-            // "images/x.png" which won't match "OEBPS/images/x.png".
             let sectionDir = '';
             try {
                 const loc = rendition.currentLocation();
                 const href = loc && loc.start && loc.start.href;
                 if (href) sectionDir = href.replace(/[^/]*$/, '');
             } catch (e) {}
-            const opfDir = (book.directory || '');
-            const baseDir = opfDir + sectionDir;
-            // The archive keys entries by full zip path. Try several bases in
-            // case book.directory is empty or differs from the actual OPF root:
-            //   sectionDir only, opfDir+sectionDir, and any parent that matches.
-            const tryResolve = (rel) => {
-                const candidates = [];
-                const bases = [sectionDir, opfDir + sectionDir, opfDir];
-                for (const base of bases) {
-                    let parts = (base + rel).split('/');
-                    const out = [];
-                    for (const p of parts) { if (p === '..') out.pop(); else if (p !== '.' && p !== '') out.push(p); }
-                    candidates.push(out.join('/'));
-                }
-                return candidates;
-            };
-            const resolvePath = (rel) => tryResolve(rel)[1] || tryResolve(rel)[0];   // prefer opfDir+sectionDir
-            const zip = book.archive.zip;
-            // Cache the archive's entry names once (JSZip doesn't expose a cheap
-            // "list" otherwise) so suffix-matching below is fast.
-            let zipEntries = null;
-            const getZipEntries = () => {
-                if (zipEntries) return zipEntries;
-                try { zipEntries = Object.keys(zip.files || {}); } catch (e) { zipEntries = []; }
-                return zipEntries;
-            };
-            const fetchBlob = async (path) => {
-                const cands = [path, path.replace(/^\//, '')];
-                if (!path.startsWith('/')) cands.push('/' + path);
-                for (const cand of cands) {
-                    try {
-                        const entry = zip.file(cand);
-                        if (entry) { const blob = await entry.async('blob'); return URL.createObjectURL(blob); }
-                    } catch (e) {}
-                }
-                // Fallback: exact-path failed (book.directory is often empty, so
-                // we can't construct the full zip path). Match by filename
-                // suffix against the real archive entries — e.g. resolve
-                // "../images/table1-1.png" to "OEBPS/images/table1-1.png" by
-                // finding the unique entry whose path ends with "images/table1-1.png".
-                const bare = path.replace(/^.*\.\.\//, '').replace(/^\//, '');  // images/table1-1.png
-                const slashBare = '/' + bare;
-                const matches = getZipEntries().filter(e => e.endsWith(bare) || e.endsWith(slashBare));
-                if (matches.length === 1) {
-                    try {
-                        const entry = zip.file(matches[0]);
-                        if (entry) { const blob = await entry.async('blob'); return URL.createObjectURL(blob); }
-                    } catch (e) {}
-                } else if (matches.length > 1) {
-                    // Ambiguous — prefer the one whose path also matches the
-                    // expected directory structure (contains 'images/').
-                    const preferred = matches.find(m => /images\//.test(m)) || matches[0];
-                    try {
-                        const entry = zip.file(preferred);
-                        if (entry) { const blob = await entry.async('blob'); return URL.createObjectURL(blob); }
-                    } catch (e) {}
-                }
-                return null;
-            };
-            let fixed = 0, missed = 0;
-            const fix = async (el, attr) => {
-                const orig = el.getAttribute(attr);
-                if (!orig || /^(blob:|data:|https?:)/i.test(orig)) return;
-                // Try every candidate base; first hit wins.
-                const candidates = tryResolve(orig);
-                for (const opfPath of candidates) {
-                    const blobUrl = await fetchBlob(opfPath);
-                    if (blobUrl) { el.setAttribute(attr, blobUrl); fixed++; return; }
-                }
-                missed++;
-                diag.warn('resolveContentMediaUrls: MISS ' + orig + ' tried=[' + candidates.join(', ') + '] (sectionDir=' + sectionDir + ' opfDir=' + opfDir + ')');
-            };
-            const objs = Array.from(doc.querySelectorAll('object[data]'));
-            for (const o of objs) await fix(o, 'data');
-            const imgs = Array.from(doc.querySelectorAll('img[src]'));
-            for (const im of imgs) await fix(im, 'src');
-            // Always log DOM totals so we can see if figures/objects exist at all.
-            diag.info('resolveContentMediaUrls: sectionDir=' + sectionDir + ' opfDir=' + opfDir + ' objects=' + objs.length + ' imgs=' + imgs.length + ' fixed=' + fixed + ' missed=' + missed
-                + ' | DOM: figures=' + doc.body.querySelectorAll('figure').length + ' objects=' + doc.body.querySelectorAll('object').length + ' imgs=' + doc.body.querySelectorAll('img').length + ' sections=' + doc.body.querySelectorAll('section').length);
+            const stats = await resolveMediaUrlsUnder(doc, sectionDir);
+            if (stats.fixed || stats.missed || stats.objectsReplaced) {
+                diag.info('resolveContentMediaUrls: sectionDir=' + sectionDir + ' opfDir=' + opfDirectory()
+                    + ' media=' + stats.media + ' fixed=' + stats.fixed + ' missed=' + stats.missed
+                    + ' svgObjects→img=' + stats.objectsReplaced);
+            }
         }
 
         function injectTapDetector(iframe) {
@@ -3164,6 +3270,12 @@
                 book.destroy();
                 book = null;
             }
+            // Release the previous book's archive blob URLs.
+            for (const url of archiveBlobCache.values()) {
+                try { URL.revokeObjectURL(url); } catch (e) {}
+            }
+            archiveBlobCache = new Map();
+            archiveEntryNames = null;
             currentFileName = null;
             currentFilePath = null;
             currentFileKey = null;
@@ -3280,7 +3392,7 @@
                 // When a spine finishes rendering, either finalize a pending
                 // GROUP render (inject sibling spines + build plan + show chunk)
                 // or, for a lone render, set up chunks directly.
-                rendition.on('displayed', () => {
+                rendition.on('displayed', async () => {
                     displayedFired = true;
                     const iframe = document.querySelector('#reader iframe');
                     if (!iframe) { diag.error("displayed: NO iframe found in #reader"); return; }
@@ -3316,7 +3428,8 @@
                     applyChineseFontMapping(iframe);
                     applyImageLayoutOverride(iframe);
                     injectTapDetector(iframe);
-                    resolveContentMediaUrls(iframe);
+                    // Await so figures never show with unresolved URLs.
+                    await resolveContentMediaUrls(iframe);
                     setupContentObserver(iframe);
 
                     const targetChunk = pendingChunkOnDisplay;
@@ -3411,94 +3524,21 @@
             for (let k = 1; k < group.spines.length; k++) {
                 const section = book.spine.get(group.spines[k]);
                 if (!section) continue;
-                // The source section's href directory (e.g. "text/") — used to
-                // resolve relative image src like "../images/x.jpeg" to the
-                // OPF-rooted path ("images/x.jpeg") that book.resources expects.
+                // The source section's href directory (e.g. "xhtml/") — the
+                // base for resolving its relative media URLs against the zip.
                 const sectionDir = section.href ? section.href.replace(/[^/]*$/, '') : '';
                 try {
                     const docEl = await section.load(book.load.bind(book));
                     const doc = docEl.ownerDocument || (docEl.documentElement ? docEl.documentElement.ownerDocument : null);
                     const srcBody = doc ? (doc.body || doc.querySelector('body')) : null;
                     if (!srcBody) { section.unload(); continue; }
-                    // Resolve relative image/media URLs to blob URLs BEFORE adopting.
-                    // section.load() returns raw relative src (e.g. "../images/x.jpeg")
-                    // which resolves against the WRONG base once adopted into the host
-                    // iframe (a different spine). We resolve the path against the source
-                    // section's directory, then fetch the bytes directly from the epub's
-                    // JSZip archive (book.archive.zip) and create a blob URL — bypassing
-                    // epub.js's resource lookup, which is finicky about path keys.
-                    // Resolve against BOTH sectionDir AND the OPF root (book.directory),
-                    // since archive entries are keyed by full zip path (e.g. OEBPS/images/x.png).
-                    const opfDir = (book.directory || '');
-                    const resolvePath = (rel) => {
-                        let parts = (opfDir + sectionDir + rel).split('/');
-                        const out = [];
-                        for (const p of parts) {
-                            if (p === '..') out.pop();
-                            else if (p !== '.' && p !== '') out.push(p);
-                        }
-                        return out.join('/');
-                    };
-                    const fetchArchiveBlob = async (path) => {
-                        // The JSZip instance lives at book.archive.zip (NOT book.zip,
-                        // which is undefined). JSZip.file() matches exact entry names
-                        // with NO leading slash. Try the resolved path and variants;
-                        // fall back to suffix-matching against real archive entries
-                        // (book.directory is often empty so we can't build the full
-                        // zip path — but the filename is unique in practice).
-                        const zip = (book.archive && book.archive.zip) ? book.archive.zip : (book.zip || null);
-                        if (!zip) return null;
-                        const candidates = [path, path.replace(/^\//, '')];
-                        if (!path.startsWith('/')) candidates.push('/' + path.replace(/^\//,''));
-                        for (const cand of candidates) {
-                            try {
-                                const entry = zip.file(cand);
-                                if (entry) {
-                                    const blob = await entry.async('blob');
-                                    return URL.createObjectURL(blob);
-                                }
-                            } catch (e) { /* try next */ }
-                        }
-                        // Suffix-match fallback.
-                        const bare = path.replace(/^.*\.\.\//, '').replace(/^\//, '');
-                        const slashBare = '/' + bare;
-                        let matches = [];
-                        try { matches = Object.keys(zip.files || {}).filter(e => e.endsWith(bare) || e.endsWith(slashBare)); } catch (e) {}
-                        if (matches.length >= 1) {
-                            const preferred = matches.find(m => /images\//.test(m)) || matches[0];
-                            try {
-                                const entry = zip.file(preferred);
-                                if (entry) { const blob = await entry.async('blob'); return URL.createObjectURL(blob); }
-                            } catch (e) {}
-                        }
-                        return null;
-                    };
-                    const resolveMediaUrls = async (root) => {
-                        const mediaEls = Array.from(root.querySelectorAll('img, image, object'));
-                        for (const el of mediaEls) {
-                            // img/image use src or href; <object> uses data.
-                            const attr = el.hasAttribute('src') ? 'src'
-                                : (el.hasAttribute('href') ? 'href'
-                                : (el.hasAttribute('data') ? 'data' : null));
-                            if (!attr) continue;
-                            const orig = el.getAttribute(attr);
-                            if (/^(blob:|data:|https?:)/i.test(orig)) continue;   // already absolute
-                            try {
-                                const opfPath = resolvePath(orig);
-                                const blobUrl = await fetchArchiveBlob(opfPath);
-                                if (blobUrl) {
-                                    el.setAttribute(attr, blobUrl);
-                                } else {
-                                    diag.warn('injectGroupBlocks: media not in archive: ' + orig + ' (tried ' + opfPath + ')');
-                                }
-                            } catch (e) {
-                                diag.warn('injectGroupBlocks: could not resolve media ' + orig + ': ' + e.message);
-                            }
-                        }
-                    };
                     const blocks = getLeafBlocks(srcBody);
                     for (const b of blocks) {
-                        await resolveMediaUrls(b);             // fix urls in-place before adopt
+                        // section.load() returns raw relative URLs (epub.js's
+                        // substitute hook never runs on this path) — resolve
+                        // them to archive blob URLs BEFORE adopting, or they'd
+                        // 404 against the host iframe's base.
+                        await resolveMediaUrlsUnder(b, sectionDir);
                         const adopted = hostDoc.adoptNode(b, true);
                         hostDoc.body.appendChild(adopted);
                         injected++;
@@ -3530,7 +3570,9 @@
             applyChineseFontMapping(iframe);
             applyImageLayoutOverride(iframe);
             injectTapDetector(iframe);
-            resolveContentMediaUrls(iframe);
+            // Await: all media URLs must be fetchable BEFORE the chunk shows,
+            // or the first display of a figure flashes a broken image.
+            await resolveContentMediaUrls(iframe);
             setupContentObserver(iframe);
 
             showChunk(chunkIndex);
@@ -3811,8 +3853,8 @@
 
         // Version stamp — confirms which code version is actually running in
         // the browser (helps distinguish real bugs from stale SW cache).
-        console.log('%c=== EPUB Reader code version: v22-auto-totals (sw v22) ===', 'color:#c8702c;font-weight:bold');
-        diag.info('=== EPUB Reader code version: v22-auto-totals (sw v22) ===');
+        console.log('%c=== EPUB Reader code version: v24-media-resolution (sw v24) ===', 'color:#c8702c;font-weight:bold');
+        diag.info('=== EPUB Reader code version: v24-media-resolution (sw v24) ===');
 
         // ---- PWA install prompt ----
         // Chrome fires 'beforeinstallprompt' when it considers the app
